@@ -1,0 +1,15 @@
+{
+  "name": "disagg",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Disaggregation & heterogeneity explorer for datacenter LLM inference. Forked from transformer_math.html; engine in src/engine/core.js.",
+  "scripts": {
+    "ui": "python3 -m http.server 5173",
+    "validate": "node test/validate.mjs",
+    "test:anchors": "node test/anchors.mjs",
+    "test:disagg": "node test/disagg.mjs",
+    "test:axes": "node test/axes.mjs",
+    "test": "node test/validate.mjs && node test/axes.mjs"
+  }
+}
