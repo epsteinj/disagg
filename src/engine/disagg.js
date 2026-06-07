@@ -19,7 +19,21 @@ import { chipPerfSpecs, modelPresets, computeChipSummary, estimateNonExpertBytes
 
 const AMORT_S = 3 * 365 * 24 * 3600; // 3-year capex amortization window (s)
 
-export function computeDisaggPoint({ modelKey, prefillChip, decodeChip, Bd, T_in = 4096, T_out = 512, precision = 'fp8', kvPrec = 'auto' }) {
+// Inter-pool transfer bandwidth: scale-UP (shared NVLink/fabric domain, intra-rack) vs scale-OUT
+// (cross-rack IB/Ethernet). 'auto' = NVLink ONLY when both pools are the SAME chip (same vendor fabric —
+// you can't NVLink AMD↔NVIDIA) AND all their chips fit in one fabric domain (rack_size); else scale-out.
+// This is the crux of correct NVL72 modeling: heterogeneous disagg is forced onto scale-out.
+function _interPoolBW(aKey, bKey, Na, Nb, topology = 'auto') {
+  const ca = chipPerfSpecs[aKey], cb = chipPerfSpecs[bKey];
+  const nvlink = Math.min(ca.interconnect_bw || 1e9, cb.interconnect_bw || 1e9);
+  const scaleOut = Math.min(ca.scaleout_bw || 100e9, cb.scaleout_bw || 100e9);
+  if (topology === 'scale-up') return { bw: nvlink, mode: 'NVLink' };
+  if (topology === 'scale-out') return { bw: scaleOut, mode: 'scale-out' };
+  const sameFabric = aKey === bKey && (Na + Nb) <= (ca.rack_size || 8);
+  return sameFabric ? { bw: nvlink, mode: 'NVLink' } : { bw: scaleOut, mode: 'scale-out' };
+}
+
+export function computeDisaggPoint({ modelKey, prefillChip, decodeChip, Bd, T_in = 4096, T_out = 512, precision = 'fp8', kvPrec = 'auto', topology = 'auto' }) {
   const model = modelPresets[modelKey];
   if (!model) return null;
   const workload = model.is_moe ? 'moe' : 'llm';
@@ -45,11 +59,11 @@ export function computeDisaggPoint({ modelKey, prefillChip, decodeChip, Bd, T_in
   const Np = prefillReplicas * rp.N_chips;
   const prefillCost = Np * cp.cost_usd;
 
-  // ── KV transfer prefill → decode ──
+  // ── KV transfer prefill → decode (scale-up NVLink vs scale-out, per topology) ──
   const dkv = (model.H_kv && model.d_k) ? model.H_kv * model.d_k : model.d;
   const kvBytesPerReq = 2 * dkv * model.L * T_in * rd.kv_bytes_per_val;
-  const transferBW = Math.min(cp.scaleout_bw || 100e9, cd.scaleout_bw || 100e9);
-  const kvTransferTime = kvBytesPerReq / transferBW;
+  const xfer = _interPoolBW(prefillChip, decodeChip, Np, Nd, topology);
+  const kvTransferTime = kvBytesPerReq / xfer.bw;
   const ttft = prefillTime + kvTransferTime;
 
   // ── Economics ──
@@ -60,7 +74,7 @@ export function computeDisaggPoint({ modelKey, prefillChip, decodeChip, Bd, T_in
     prefillChip, decodeChip, Bd,
     interactivity, throughput, costPerMtok, ttft, kvTransferTime,
     Np, Nd, prefillCost, decodeCost, totalCost,
-    decodeBind: rd.overallBinds,
+    decodeBind: rd.overallBinds, interFabric: xfer.mode,
     heterogeneous: prefillChip !== decodeChip,
   };
 }
@@ -126,7 +140,7 @@ function _rooflineForSteps(chip, model, steps, { B, T_seq, workload, phase, effP
 // Run attention (KV-bound, wants bandwidth) and the MoE experts (capacity/compute-bound) on DIFFERENT
 // pools. The cost that makes-or-breaks it: the hidden state (B·d) crosses between pools EVERY layer,
 // both directions — a far higher-frequency transfer than prefill/decode's once-per-request KV ship.
-export function computeAttnExpertPoint({ modelKey, attnChip, expertChip, Bd, T_in = 4096, T_out = 512, precision = 'fp8', kvPrec = 'auto' }) {
+export function computeAttnExpertPoint({ modelKey, attnChip, expertChip, Bd, T_in = 4096, T_out = 512, precision = 'fp8', kvPrec = 'auto', topology = 'auto' }) {
   const model = modelPresets[modelKey];
   if (!model || !model.is_moe) return null; // axis is MoE-specific
   const ca = chipPerfSpecs[attnChip], ce = chipPerfSpecs[expertChip];
@@ -156,8 +170,8 @@ export function computeAttnExpertPoint({ modelKey, attnChip, expertChip, Bd, T_i
   const expertLayer = _rooflineForSteps(ce, model, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
     { B: Bd, T_seq: T_max, workload: 'moe', phase: 'decode', effPrec: effE, kvPrec: effE, N_chips: Ne, moeDecodeEff: moeEff });
 
-  const interBW = Math.min(ca.scaleout_bw || 100e9, ce.scaleout_bw || 100e9);
-  const transferLayer = (2 * Bd * model.d * bpvA) / interBW; // hidden state both directions, per layer
+  const xfer = _interPoolBW(attnChip, expertChip, Na, Ne, topology);
+  const transferLayer = (2 * Bd * model.d * bpvA) / xfer.bw; // hidden state both directions, per layer
   const tPerToken = model.L * (attnLayer + expertLayer + transferLayer);
   const interactivity = 1 / tPerToken, throughput = Bd / tPerToken;
   const totalCost = Na * ca.cost_usd + Ne * ce.cost_usd;
@@ -169,7 +183,7 @@ export function computeAttnExpertPoint({ modelKey, attnChip, expertChip, Bd, T_i
     interactivity, throughput, costPerMtok, ttft: 0, kvTransferTime: 0,
     Np: Na, Nd: Ne, totalCost,
     decodeBind: transferFrac > 0.4 ? 'xfer-bound' : (expertLayer > attnLayer ? 'expert' : 'attention'),
-    heterogeneous: attnChip !== expertChip, transferFrac,
+    interFabric: xfer.mode, heterogeneous: attnChip !== expertChip, transferFrac,
   };
 }
 
@@ -205,13 +219,13 @@ export function computeSpecDecodePoint({ modelKey, targetChip, draftChip, draftM
 }
 
 // Unified sweep dispatcher. chipsA → pool A (prefill / attention / draft), chipsB → pool B (decode / expert / target).
-export function sweep({ axis = 'prefill-decode', modelKey, chipsA, chipsB, batches, T_in = 4096, T_out = 512, precision = 'fp8', draftModelKey = 'llama-3-2-1b', K = 4, alpha = 0.7 }) {
+export function sweep({ axis = 'prefill-decode', modelKey, chipsA, chipsB, batches, T_in = 4096, T_out = 512, precision = 'fp8', draftModelKey = 'llama-3-2-1b', K = 4, alpha = 0.7, topology = 'auto' }) {
   const pts = [];
   for (const a of chipsA) for (const b of chipsB) for (const Bd of batches) {
     let p;
-    if (axis === 'attn-expert') p = computeAttnExpertPoint({ modelKey, attnChip: a, expertChip: b, Bd, T_in, T_out, precision });
+    if (axis === 'attn-expert') p = computeAttnExpertPoint({ modelKey, attnChip: a, expertChip: b, Bd, T_in, T_out, precision, topology });
     else if (axis === 'spec-decode') p = computeSpecDecodePoint({ modelKey, targetChip: b, draftChip: a, draftModelKey, Bd, K, alpha, T_in, T_out, precision });
-    else p = computeDisaggPoint({ modelKey, prefillChip: a, decodeChip: b, Bd, T_in, T_out, precision });
+    else p = computeDisaggPoint({ modelKey, prefillChip: a, decodeChip: b, Bd, T_in, T_out, precision, topology });
     if (p && isFinite(p.throughput) && isFinite(p.costPerMtok) && p.throughput > 0) pts.push(p);
   }
   return pts;
