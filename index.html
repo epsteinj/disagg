@@ -102,11 +102,16 @@
       </div>
     </div>
     <div class="field">
+      <label>Workload</label>
+      <select id="workload"></select>
+    </div>
+    <div class="field">
       <label>Workload shape</label>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
         <div><span class="small">Input tok (T_in)</span><input type="text" id="tin" value="4096"></div>
-        <div><span class="small">Output tok (T_out)</span><input type="text" id="tout" value="512"></div>
+        <div><span class="small">Output tok (T_out)</span><input type="text" id="tout" value="4096"></div>
       </div>
+      <div style="margin-top:6px;"><span class="small">Interactivity target (tok/s/user)</span><input type="text" id="slo" value="30"></div>
     </div>
     <div class="field">
       <label>Precision</label>
@@ -167,6 +172,19 @@ const AXIS_LABELS = {
   'attn-expert':    ['Attention pool (KV / bandwidth)', 'Expert pool (capacity / compute)'],
   'spec-decode':    ['Draft pool (small / fast)', 'Target pool (big / verify)'],
 };
+// Default workloads (ported from transformer_math.html): set T_in / T_out (from input:output ratio)
+// and an interactivity SLO target (tok/s/user) that drives the "cheapest config that meets the bar" callout.
+const WORKLOADS = {
+  chat:          { name: 'Chat · 1:1',                 tin: 4096,   tout: 4096, slo: 30 },
+  autocomplete:  { name: 'Search autocomplete · 4:1',  tin: 1024,   tout: 256,  slo: 100 },
+  voice:         { name: 'Voice / real-time · 1:1',     tin: 2048,   tout: 2048, slo: 80 },
+  codeassist:    { name: 'Code assistant inline · 5:1', tin: 16384,  tout: 3277, slo: 50 },
+  codegen:       { name: 'Code generation · 1:2',       tin: 4096,   tout: 8192, slo: 20 },
+  rag:           { name: 'RAG / document Q&A · 10:1',   tin: 32768,  tout: 3277, slo: 25 },
+  summarization: { name: 'Long-doc summarization · 30:1', tin: 131072, tout: 4369, slo: 10 },
+  agentic:       { name: 'Agentic / tool-use · 20:1',   tin: 16384,  tout: 819,  slo: 10 },
+  custom:        { name: 'Custom', tin: 4096, tout: 4096, slo: 30 },
+};
 
 const $ = id => document.getElementById(id);
 const DEFAULT_PREFILL = ['nvidia-b200','nvidia-h100','amd-mi355x'];
@@ -184,6 +202,17 @@ $('model').value = 'llama-3-70b';
 const smallModels = llmModels.filter(([,m]) => !m.is_moe && m.N_params <= 9e9);
 $('draftModel').innerHTML = smallModels.map(([k,m]) => `<option value="${k}">${m.name}</option>`).join('');
 $('draftModel').value = smallModels.find(([k])=>k==='llama-3-2-1b') ? 'llama-3-2-1b' : (smallModels[0]?.[0] || '');
+
+// workload presets
+$('workload').innerHTML = Object.entries(WORKLOADS).map(([k,w])=>`<option value="${k}">${w.name}</option>`).join('');
+$('workload').value = 'chat';
+function applyWorkload(){
+  const w = WORKLOADS[$('workload').value];
+  if (!w || $('workload').value==='custom') return;
+  $('tin').value = w.tin; $('tout').value = w.tout; $('slo').value = w.slo;
+}
+function markCustom(){ $('workload').value='custom'; }
+applyWorkload();
 
 function tagFor(prov){
   if (!prov) return '';
@@ -246,10 +275,11 @@ function run(){
   const frontier = paretoFrontier(pts, cfg);
   const frontierSet = new Set(frontier);
 
+  const slo = Math.max(1, parseFloat($('slo').value)||30);
   $('chartTitle').textContent = view==='ci' ? 'Cost frontier' : 'Throughput × interactivity frontier';
-  $('chartHint').textContent = `${modelKey} · T_in=${T_in} T_out=${T_out} · ${precision.toUpperCase()} · ${pts.length} configs swept`;
+  $('chartHint').textContent = `${modelKey} · T_in=${T_in} T_out=${T_out} · ${precision.toUpperCase()} · target ≥${slo} tok/s/user · ${pts.length} configs swept`;
   drawChart(pts, frontier, frontierSet, cfg);
-  renderHeadline(pts);
+  renderHeadline(pts, slo);
   renderTable(frontier);
 }
 
@@ -330,22 +360,26 @@ function drawChart(pts, frontier, frontierSet, cfg){
   });
 }
 
-function renderHeadline(pts){
-  // cheapest config at a chat-grade interactivity target, and hetero-vs-homo at matched interactivity.
-  const band = pts.filter(p=>p.interactivity>=25 && p.interactivity<=45 && isFinite(p.costPerMtok));
-  const hom = band.filter(p=>!p.heterogeneous).sort((a,b)=>a.costPerMtok-b.costPerMtok)[0];
-  const het = band.filter(p=>p.heterogeneous).sort((a,b)=>a.costPerMtok-b.costPerMtok)[0];
+function renderHeadline(pts, slo){
+  // cheapest config that MEETS the workload's interactivity target, and hetero-vs-homo at that bar.
+  const meet = pts.filter(p=>p.interactivity>=slo && isFinite(p.costPerMtok));
+  const byCost = a => a.slice().sort((x,y)=>x.costPerMtok-y.costPerMtok)[0];
+  const best = byCost(meet);
+  const hom = byCost(meet.filter(p=>!p.heterogeneous));
+  const het = byCost(meet.filter(p=>p.heterogeneous));
   let html='';
-  if (het && hom){
-    const d=(1-het.costPerMtok/hom.costPerMtok)*100;
-    const win = d>0;
-    html = `<div class="callout"><div class="big">At chat-grade interactivity (25–45 tok/s/user), the cheapest split is
-      ${het.heterogeneous?'<b>heterogeneous</b>':'homogeneous'}: <b>${shortName(het.prefillChip)} → ${shortName(het.decodeChip)}</b>
-      at $${het.costPerMtok.toFixed(3)}/Mtok.</div>
-      <div class="sub">vs best homogeneous (${shortName(hom.prefillChip)}→${shortName(hom.decodeChip)}, $${hom.costPerMtok.toFixed(3)}) —
-      heterogeneous is <b style="color:${win?'var(--good)':'var(--bad)'}">${win?d.toFixed(0)+'% cheaper':(-d).toFixed(0)+'% pricier'}</b> at matched interactivity.</div></div>`;
+  if (best){
+    html = `<div class="callout"><div class="big">Cheapest config meeting ≥${slo} tok/s/user:
+      ${best.heterogeneous?'<b>heterogeneous</b>':'homogeneous'} <b>${shortName(best.prefillChip)} → ${shortName(best.decodeChip)}</b>
+      (Bd=${best.Bd}) at $${best.costPerMtok.toFixed(3)}/Mtok.</div>`;
+    if (het && hom){
+      const d=(1-het.costPerMtok/hom.costPerMtok)*100, win=d>0;
+      html += `<div class="sub">best heterogeneous $${het.costPerMtok.toFixed(3)} vs best homogeneous $${hom.costPerMtok.toFixed(3)} —
+        heterogeneous is <b style="color:${win?'var(--good)':'var(--bad)'}">${win?d.toFixed(0)+'% cheaper':(-d).toFixed(0)+'% pricier'}</b> at the interactivity bar.</div>`;
+    }
+    html += `</div>`;
   } else {
-    html = `<div class="callout"><div class="sub">No configs land in the 25–45 tok/s/user band for this selection — adjust batch sweep or chips.</div></div>`;
+    html = `<div class="callout"><div class="sub">No config meets ≥${slo} tok/s/user — lower the target, add faster decode chips, or use smaller batches.</div></div>`;
   }
   $('headline').innerHTML = html;
 }
@@ -375,7 +409,9 @@ function renderTable(frontier){
 }
 
 // wire events
-['axis','model','tin','tout','prec','batches','view','draftModel','specK','specAlpha'].forEach(id=>$(id).addEventListener('change',run));
+['axis','model','prec','batches','view','draftModel','specK','specAlpha'].forEach(id=>$(id).addEventListener('change',run));
+$('workload').addEventListener('change', ()=>{ applyWorkload(); run(); });
+['tin','tout','slo'].forEach(id=>$(id).addEventListener('change', ()=>{ markCustom(); run(); }));
 $('prefillChips').addEventListener('change',run);
 $('decodeChips').addEventListener('change',run);
 run();
