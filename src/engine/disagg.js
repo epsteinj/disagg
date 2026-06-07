@@ -19,18 +19,21 @@ import { chipPerfSpecs, modelPresets, computeChipSummary, estimateNonExpertBytes
 
 const AMORT_S = 3 * 365 * 24 * 3600; // 3-year capex amortization window (s)
 
-// Inter-pool transfer bandwidth: scale-UP (shared NVLink/fabric domain, intra-rack) vs scale-OUT
-// (cross-rack IB/Ethernet). 'auto' = NVLink ONLY when both pools are the SAME chip (same vendor fabric —
-// you can't NVLink AMD↔NVIDIA) AND all their chips fit in one fabric domain (rack_size); else scale-out.
-// This is the crux of correct NVL72 modeling: heterogeneous disagg is forced onto scale-out.
+// Inter-pool transfer bandwidth: scale-UP (each vendor's own intra-rack fabric — NVLink, Infinity Fabric,
+// ICI, NeuronLink, Credo, Juniper…) vs scale-OUT (cross-rack IB/Ethernet). A scale-up fabric is
+// vendor-specific and only spans ONE chip type's domain, so it's available only when both pools are the
+// SAME chip AND fit that chip's own fabric-domain size (rack_size). 'auto' enforces this; mixed-vendor
+// disagg is therefore forced onto scale-out. BW and domain are read per-chip (not assumed = NVL72).
 function _interPoolBW(aKey, bKey, Na, Nb, topology = 'auto') {
   const ca = chipPerfSpecs[aKey], cb = chipPerfSpecs[bKey];
-  const nvlink = Math.min(ca.interconnect_bw || 1e9, cb.interconnect_bw || 1e9);
+  const sameChip = aKey === bKey;
+  const scaleUpBW = Math.min(ca.interconnect_bw || 1e9, cb.interconnect_bw || 1e9); // each chip's own fabric
   const scaleOut = Math.min(ca.scaleout_bw || 100e9, cb.scaleout_bw || 100e9);
-  if (topology === 'scale-up') return { bw: nvlink, mode: 'NVLink' };
+  const fabric = sameChip ? (ca.ic_name || 'scale-up fabric') : 'mixed-vendor (no shared fabric)';
+  if (topology === 'scale-up') return { bw: scaleUpBW, mode: sameChip ? fabric : 'forced scale-up (hypothetical)' };
   if (topology === 'scale-out') return { bw: scaleOut, mode: 'scale-out' };
-  const sameFabric = aKey === bKey && (Na + Nb) <= (ca.rack_size || 8);
-  return sameFabric ? { bw: nvlink, mode: 'NVLink' } : { bw: scaleOut, mode: 'scale-out' };
+  const fitsFabric = sameChip && (Na + Nb) <= (ca.rack_size || 8);
+  return fitsFabric ? { bw: scaleUpBW, mode: fabric } : { bw: scaleOut, mode: 'scale-out' };
 }
 
 export function computeDisaggPoint({ modelKey, prefillChip, decodeChip, Bd, T_in = 4096, T_out = 512, precision = 'fp8', kvPrec = 'auto', topology = 'auto' }) {

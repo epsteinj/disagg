@@ -136,11 +136,11 @@
     <div class="field">
       <label>Pool interconnect</label>
       <select id="topology">
-        <option value="auto">Auto · NVLink if same chip & fits rack, else scale-out</option>
-        <option value="scale-up">Force NVLink (intra-rack / NVL72)</option>
-        <option value="scale-out">Force scale-out (cross-rack IB)</option>
+        <option value="auto">Auto · vendor scale-up fabric if same chip & fits domain, else scale-out</option>
+        <option value="scale-up">Force scale-up fabric (intra-rack)</option>
+        <option value="scale-out">Force scale-out (cross-rack IB / Ethernet)</option>
       </select>
-      <span class="small">heterogeneous (mixed-vendor) pools can't share NVLink → scale-out</span>
+      <span class="small">scale-up fabric is per-vendor (NVLink / Infinity Fabric / ICI / NeuronLink…); mixed-vendor pools can't share one → scale-out</span>
     </div>
     <div class="field">
       <label id="labelA">Prefill pool (compute-dense)</label>
