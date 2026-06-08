@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Disaggregation schemes — step by step</title>
+<style>
+  :root{ --bg:#fbfbfa; --ink:#1a1a1a; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --het:#7c3aed;
+    --good:#16a34a; --bad:#dc2626; --mono:'SF Mono','JetBrains Mono',Menlo,monospace; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;}
+  .wrap{max-width:940px;margin:0 auto;padding:24px 24px 80px;}
+  header{border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:8px;}
+  header h1{margin:0;font-size:20px;}
+  header p{margin:5px 0 0;color:var(--muted);font-size:13px;max-width:740px;}
+  .back{display:inline-block;margin-bottom:14px;color:var(--accent);text-decoration:none;font-size:13px;}
+  .back:hover{text-decoration:underline;}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:22px 0;}
+  .card h2{margin:0 0 2px;font-size:16px;}
+  .card .tag{font-family:var(--mono);font-size:11px;background:#f3f4f6;color:var(--muted);padding:1px 7px;border-radius:5px;margin-left:6px;font-weight:400;}
+  .card .sum{margin:4px 0 14px;color:#374151;font-size:13px;}
+  svg{width:100%;height:auto;display:block;background:#fcfcfc;border:1px solid var(--line);border-radius:10px;}
+  .pool{fill:#fafafa;stroke:#d1d5db;stroke-width:1.5;}
+  .poollbl{font-size:12px;font-weight:650;fill:#374151;}
+  .poolsub{font-size:10px;fill:var(--muted);}
+  .chip{fill:#eef2ff;stroke:#c7d2fe;stroke-width:1;}
+  .tok{fill:#cbd5e1;} .tokg{fill:#86efac;} .tokr{fill:#fca5a5;} .tokb{fill:#93c5fd;}
+  .pkt{fill:#dbeafe;stroke:var(--accent);stroke-width:1.2;} .pktt{font-size:11px;fill:#1e3a8a;font-family:var(--mono);}
+  .lbl{font-size:10px;fill:var(--muted);} .exp{fill:#e0e7ff;stroke:#c7d2fe;}
+  .flow{opacity:.14;transition:opacity .4s ease;}
+  .flow.on{opacity:1;}
+  .glow.on{filter:drop-shadow(0 0 5px rgba(37,99,235,.6));}
+  .badge{font-size:11px;fill:var(--het);font-weight:600;font-family:var(--mono);}
+  .ctrl{display:flex;align-items:center;gap:8px;margin:12px 0 8px;}
+  .ctrl button{border:1px solid var(--line);background:#fff;border-radius:7px;padding:5px 12px;font-size:13px;cursor:pointer;font-family:inherit;}
+  .ctrl button:hover{background:#f3f4f6;}
+  .ctrl .num{font-family:var(--mono);font-size:12px;color:var(--muted);margin-left:auto;}
+  .cap{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:11px 13px;font-size:13px;min-height:46px;line-height:1.5;}
+  .cap b{color:var(--accent);}
+  .foot{font-size:12px;color:var(--muted);line-height:1.6;margin-top:22px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="index.html">← back to the explorer</a>
+  <header>
+    <h1>Disaggregation schemes, step by step</h1>
+    <p>Each axis splits the model across separate chip pools. Below: what happens at each step, what crosses between the pools, and how often. Use <b>Play</b> or step through with Prev / Next.</p>
+  </header>
+
+  <!-- 1 · PREFILL / DECODE -->
+  <div class="card">
+    <h2>1 · Prefill / Decode <span class="tag">phase split</span></h2>
+    <p class="sum">The two inference phases have opposite hardware appetites — prefill is compute-bound, decode is memory-bandwidth-bound — so run them on pools sized (and chosen) for each.</p>
+    <svg id="svg-pd" viewBox="0 0 680 200">
+      <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker>
+        <marker id="ahg" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#16a34a"/></marker></defs>
+      <g id="pd-prompt" class="flow">
+        <rect x="12" y="78" width="13" height="13" rx="2" class="tok"/><rect x="27" y="78" width="13" height="13" rx="2" class="tok"/>
+        <rect x="12" y="93" width="13" height="13" rx="2" class="tok"/><rect x="27" y="93" width="13" height="13" rx="2" class="tok"/>
+        <text x="26" y="124" class="lbl" text-anchor="middle">prompt</text>
+        <line x1="46" y1="98" x2="102" y2="98" stroke="#2563eb" stroke-width="2" marker-end="url(#ah)"/>
+      </g>
+      <rect x="108" y="46" width="168" height="104" rx="10" class="pool"/>
+      <text x="192" y="66" class="poollbl" text-anchor="middle">Prefill pool</text>
+      <rect x="124" y="78" width="60" height="58" rx="6" class="chip"/><rect x="200" y="78" width="60" height="58" rx="6" class="chip"/>
+      <rect id="pd-prefill" class="flow glow" x="108" y="46" width="168" height="104" rx="10" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+      <g id="pd-kv" class="flow">
+        <line x1="278" y1="98" x2="396" y2="98" stroke="#2563eb" stroke-width="2" marker-end="url(#ah)"/>
+        <rect x="308" y="82" width="58" height="30" rx="6" class="pkt"/><text x="337" y="101" class="pktt" text-anchor="middle">KV cache</text>
+      </g>
+      <rect x="402" y="46" width="168" height="104" rx="10" class="pool"/>
+      <text x="486" y="66" class="poollbl" text-anchor="middle">Decode pool</text>
+      <rect x="418" y="78" width="60" height="58" rx="6" class="chip"/><rect x="494" y="78" width="60" height="58" rx="6" class="chip"/>
+      <rect id="pd-decode" class="flow glow" x="402" y="46" width="168" height="104" rx="10" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+      <g id="pd-out" class="flow">
+        <line x1="572" y1="98" x2="610" y2="98" stroke="#16a34a" stroke-width="2" marker-end="url(#ahg)"/>
+        <rect x="614" y="78" width="13" height="13" rx="2" class="tokg"/><rect x="629" y="78" width="13" height="13" rx="2" class="tokg"/>
+        <rect x="614" y="93" width="13" height="13" rx="2" class="tokg"/>
+        <text x="628" y="124" class="lbl" text-anchor="middle">tokens</text>
+      </g>
+    </svg>
+    <div class="ctrl"><button id="prev-pd">◀ Prev</button><button id="play-pd">▶ Play</button><button id="next-pd">Next ▶</button><span class="num" id="n-pd"></span></div>
+    <div class="cap" id="cap-pd"></div>
+  </div>
+
+  <!-- 2 · ATTENTION / EXPERT -->
+  <div class="card">
+    <h2>2 · Attention / Expert <span class="tag">MoE only · component split</span></h2>
+    <p class="sum">For mixture-of-experts models, split each layer's attention (KV-bound, wants bandwidth) from its expert FFN (capacity + compute-bound, holds the whole expert bank).</p>
+    <svg id="svg-ae" viewBox="0 0 680 210">
+      <defs><marker id="ah2" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker></defs>
+      <rect x="74" y="46" width="172" height="120" rx="10" class="pool"/>
+      <text x="160" y="66" class="poollbl" text-anchor="middle">Attention pool</text>
+      <text x="160" y="80" class="poolsub" text-anchor="middle">Q/K/V · reads KV</text>
+      <rect x="90" y="92" width="66" height="62" rx="6" class="chip"/><rect x="166" y="92" width="66" height="62" rx="6" class="chip"/>
+      <rect id="ae-attn" class="flow glow" x="74" y="46" width="172" height="120" rx="10" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+      <g id="ae-fwd" class="flow">
+        <line x1="248" y1="78" x2="396" y2="78" stroke="#2563eb" stroke-width="2" marker-end="url(#ah2)"/>
+        <rect x="296" y="62" width="56" height="28" rx="6" class="pkt"/><text x="324" y="80" class="pktt" text-anchor="middle">hidden h</text>
+      </g>
+      <rect x="400" y="46" width="206" height="120" rx="10" class="pool"/>
+      <text x="503" y="66" class="poollbl" text-anchor="middle">Expert pool</text>
+      <text x="503" y="80" class="poolsub" text-anchor="middle">top-K of E experts run</text>
+      <g>
+        <rect x="416" y="92" width="38" height="28" rx="4" class="exp"/><rect x="462" y="92" width="38" height="28" rx="4" class="exp"/>
+        <rect x="508" y="92" width="38" height="28" rx="4" class="exp"/><rect x="554" y="92" width="38" height="28" rx="4" class="exp"/>
+        <rect x="416" y="126" width="38" height="28" rx="4" class="exp"/><rect x="462" y="126" width="38" height="28" rx="4" class="exp"/>
+        <rect x="508" y="126" width="38" height="28" rx="4" class="exp"/><rect x="554" y="126" width="38" height="28" rx="4" class="exp"/>
+      </g>
+      <g id="ae-expert" class="flow">
+        <rect x="462" y="92" width="38" height="28" rx="4" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+        <rect x="554" y="126" width="38" height="28" rx="4" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+        <text x="503" y="180" class="badge" text-anchor="middle">2 experts fire</text>
+      </g>
+      <g id="ae-back" class="flow">
+        <line x1="398" y1="138" x2="250" y2="138" stroke="#2563eb" stroke-width="2" marker-end="url(#ah2)"/>
+        <rect x="298" y="122" width="52" height="28" rx="6" class="pkt"/><text x="324" y="140" class="pktt" text-anchor="middle">h′ back</text>
+      </g>
+      <text id="ae-loop" class="flow badge" x="340" y="200" text-anchor="middle">⟲ repeats every layer (×L), both directions</text>
+    </svg>
+    <div class="ctrl"><button id="prev-ae">◀ Prev</button><button id="play-ae">▶ Play</button><button id="next-ae">Next ▶</button><span class="num" id="n-ae"></span></div>
+    <div class="cap" id="cap-ae"></div>
+  </div>
+
+  <!-- 3 · SPECULATIVE DECODING -->
+  <div class="card">
+    <h2>3 · Speculative decoding <span class="tag">draft / target split</span></h2>
+    <p class="sum">A small draft model proposes K tokens; the big target verifies them all in one pass — amortizing the target's expensive weight read over many tokens.</p>
+    <svg id="svg-sd" viewBox="0 0 680 210">
+      <defs><marker id="ah3" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker></defs>
+      <rect x="60" y="62" width="150" height="92" rx="10" class="pool"/>
+      <text x="135" y="82" class="poollbl" text-anchor="middle">Draft pool</text>
+      <text x="135" y="96" class="poolsub" text-anchor="middle">small model · fast</text>
+      <rect x="98" y="106" width="74" height="36" rx="6" class="chip"/>
+      <g id="sd-draft" class="flow">
+        <rect id="sd-attn" class="glow" x="60" y="62" width="150" height="92" rx="10" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+        <rect x="60" y="160" width="13" height="13" rx="2" class="tokb"/><rect x="76" y="160" width="13" height="13" rx="2" class="tokb"/>
+        <rect x="92" y="160" width="13" height="13" rx="2" class="tokb"/><rect x="108" y="160" width="13" height="13" rx="2" class="tokb"/>
+        <text x="150" y="172" class="lbl" text-anchor="middle">K draft tokens</text>
+      </g>
+      <g id="sd-propose" class="flow">
+        <line x1="214" y1="108" x2="416" y2="108" stroke="#2563eb" stroke-width="2" marker-end="url(#ah3)"/>
+        <rect x="276" y="92" width="78" height="30" rx="6" class="pkt"/><text x="315" y="111" class="pktt" text-anchor="middle">K candidates</text>
+      </g>
+      <rect x="420" y="46" width="192" height="124" rx="10" class="pool"/>
+      <text x="516" y="66" class="poollbl" text-anchor="middle">Target pool</text>
+      <text x="516" y="80" class="poolsub" text-anchor="middle">big model · verifies K in 1 pass</text>
+      <rect x="436" y="92" width="76" height="62" rx="6" class="chip"/><rect x="522" y="92" width="76" height="62" rx="6" class="chip"/>
+      <rect id="sd-verify" class="flow glow" x="420" y="46" width="192" height="124" rx="10" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+      <g id="sd-accept" class="flow">
+        <rect x="436" y="178" width="14" height="14" rx="2" class="tokg"/><rect x="454" y="178" width="14" height="14" rx="2" class="tokg"/>
+        <rect x="472" y="178" width="14" height="14" rx="2" class="tokr"/><rect x="490" y="178" width="14" height="14" rx="2" class="tokb"/>
+        <text x="600" y="190" class="lbl" text-anchor="end">✓ accept prefix (α) · ✗ reject · +1 bonus</text>
+      </g>
+      <text id="sd-loop" class="flow badge" x="335" y="206" text-anchor="middle">⟲ repeat — ~2–3× tokens per target pass</text>
+    </svg>
+    <div class="ctrl"><button id="prev-sd">◀ Prev</button><button id="play-sd">▶ Play</button><button id="next-sd">Next ▶</button><span class="num" id="n-sd"></span></div>
+    <div class="cap" id="cap-sd"></div>
+  </div>
+
+  <p class="foot"><b>Scale-up</b> = a vendor's intra-rack fabric (NVLink/NVL72, Infinity Fabric, ICI, NeuronLink, Credo, Juniper…) — high bandwidth, limited domain size, single-vendor. <b>Scale-out</b> = cross-rack InfiniBand / Ethernet — lower bandwidth, unbounded, vendor-agnostic. Mixed-vendor pools can only talk scale-out, which is why heterogeneous disaggregation pays a transfer penalty homogeneous deployments avoid.</p>
+</div>
+
+<script>
+const SCHEMES = {
+  pd: { steps: [
+    { a:['pd-prompt'], c:'A request arrives. The full prompt is handed to the <b>prefill</b> pool.' },
+    { a:['pd-prefill'], c:'<b>Prefill</b>: one parallel forward pass over the <em>entire</em> prompt — compute-bound. It builds the KV cache (attention memory for every prompt token).' },
+    { a:['pd-kv'], c:'The <b>KV cache</b> is shipped to the decode pool — over the shared scale-up fabric if both pools are the same chip in one domain, else scale-out. This latency adds to time-to-first-token.' },
+    { a:['pd-decode','pd-out'], c:'<b>Decode</b>: generate output tokens one at a time, re-reading all weights + the KV cache from memory every step — bandwidth-bound.' },
+  ]},
+  ae: { steps: [
+    { a:['ae-attn'], c:'Inside one layer, the <b>attention</b> pool computes Q/K/V and attention, reading the KV cache. It wants memory bandwidth.' },
+    { a:['ae-fwd'], c:'The resulting <b>hidden state</b> is sent to the expert pool.' },
+    { a:['ae-expert'], c:'A router picks the <b>top-K experts</b> per token; only those FFNs run. The expert pool must hold the whole expert bank (capacity) and is compute-bound.' },
+    { a:['ae-back','ae-loop'], c:'The output returns to the attention pool for the next layer. This round-trip happens <b>every layer, both directions</b> — a high-frequency transfer that needs a fast fabric.' },
+  ]},
+  sd: { steps: [
+    { a:['sd-draft'], c:'The small <b>draft</b> model generates K candidate tokens autoregressively — cheap and fast.' },
+    { a:['sd-propose'], c:'The K candidates are sent to the big <b>target</b> model — just K token-ids, negligible bytes.' },
+    { a:['sd-verify'], c:'The target <b>verifies all K in ONE parallel pass</b> — amortizing its expensive weight read over K tokens instead of 1.' },
+    { a:['sd-accept','sd-loop'], c:'The longest matching prefix is accepted (per-token rate α); the first mismatch is replaced and one bonus token added. Repeat. Net: <b>~2–3× tokens per target pass</b>.' },
+  ]},
+};
+function init(k){
+  const s=SCHEMES[k], svg=document.getElementById('svg-'+k); let i=0, timer=null;
+  const playBtn=document.getElementById('play-'+k);
+  function render(){
+    svg.querySelectorAll('.flow').forEach(e=>e.classList.remove('on'));
+    s.steps[i].a.forEach(id=>{const el=document.getElementById(id); if(el) el.classList.add('on');});
+    document.getElementById('cap-'+k).innerHTML='<b>Step '+(i+1)+'.</b> '+s.steps[i].c;
+    document.getElementById('n-'+k).textContent=(i+1)+' / '+s.steps.length;
+  }
+  function go(d){ i=(i+d+s.steps.length)%s.steps.length; render(); }
+  function stop(){ if(timer){clearInterval(timer);timer=null;playBtn.textContent='▶ Play';} }
+  document.getElementById('prev-'+k).onclick=()=>{stop();go(-1);};
+  document.getElementById('next-'+k).onclick=()=>{stop();go(1);};
+  playBtn.onclick=()=>{ if(timer) stop(); else { playBtn.textContent='❚❚ Pause'; timer=setInterval(()=>go(1),1700); } };
+  render();
+}
+['pd','ae','sd'].forEach(init);
+</script>
+</body>
+</html>

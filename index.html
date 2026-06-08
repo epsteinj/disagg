@@ -99,7 +99,7 @@
 </head>
 <body>
 <header>
-  <h1>Disaggregation Explorer <span class="headlink" id="openSchemes">How the axes work ↗</span></h1>
+  <h1>Disaggregation Explorer <a class="headlink" href="schemes.html">How the axes work — step by step ↗</a></h1>
   <p>Split prefill and decode across <em>different</em> chips, charge the KV-cache transfer between pools, and
   trace the throughput × interactivity × $/token frontier. Reveals whether a <b>heterogeneous</b> fleet beats a
   homogeneous one — and which silicon wins which phase. Engine forked + audited from <code>transformer_math.html</code>.</p>
@@ -199,7 +199,6 @@
 </div>
 <div id="tip"></div>
 <div class="overlay" id="detailOverlay"><div class="sheet" id="detailSheet"></div></div>
-<div class="overlay" id="schemesOverlay"><div class="sheet" id="schemesSheet"></div></div>
 
 <script type="module">
 import { sweep, paretoFrontier } from './src/engine/disagg.js';
@@ -451,8 +450,8 @@ function openDetail(p){
   $('detailOverlay').classList.add('open');
 }
 
-// ── Schemes explainer page ──
-const SCHEMES_HTML = `
+// (Schemes explainer moved to its own page: schemes.html)
+const SCHEMES_HTML_UNUSED = `
   <span class="close" id="closeSchemes">✕ close</span>
   <h2>Disaggregation schemes</h2>
   <p class="small">How each axis splits the model across separate chip pools, what crosses between them, and when it wins.</p>
@@ -472,15 +471,9 @@ const SCHEMES_HTML = `
     <p>Disaggregate the draft (cheap, latency-optimized chip) from the target (big chip). <b>What crosses:</b> just K token-ids each way — negligible bytes. <b>Wins when:</b> acceptance is high (well-matched draft/target) — ~2–3× per-user speedup for the cost of one extra forward pass, by amortizing the target's expensive weight read over several tokens.</p>
   </div>
   <p class="small" style="margin-top:18px; line-height:1.6;"><b>Scale-up</b> = a vendor's intra-rack fabric (NVLink/NVL72, Infinity Fabric, ICI, NeuronLink, Credo, Juniper…) — high bandwidth, limited domain size, single-vendor. <b>Scale-out</b> = cross-rack InfiniBand / Ethernet — lower bandwidth, unbounded, vendor-agnostic. Mixed-vendor pools can only talk scale-out.</p>`;
-function openSchemes(){
-  $('schemesSheet').innerHTML = SCHEMES_HTML;
-  $('closeSchemes').onclick = ()=>$('schemesOverlay').classList.remove('open');
-  $('schemesOverlay').classList.add('open');
-}
-// close overlays on background click or Escape
-[['detailOverlay'],['schemesOverlay']].forEach(([id])=>$(id).addEventListener('click',e=>{ if(e.target===$(id)) $(id).classList.remove('open'); }));
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ $('detailOverlay').classList.remove('open'); $('schemesOverlay').classList.remove('open'); }});
-$('openSchemes').addEventListener('click', openSchemes);
+// close the detail overlay on background click or Escape
+$('detailOverlay').addEventListener('click',e=>{ if(e.target===$('detailOverlay')) $('detailOverlay').classList.remove('open'); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') $('detailOverlay').classList.remove('open'); });
 
 function renderHeadline(pts, slo){
   // cheapest config that MEETS the workload's interactivity target, and hetero-vs-homo at that bar.
