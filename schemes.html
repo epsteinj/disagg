@@ -18,7 +18,10 @@
   .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:22px 0;}
   .card h2{margin:0 0 2px;font-size:16px;}
   .card .tag{font-family:var(--mono);font-size:11px;background:#f3f4f6;color:var(--muted);padding:1px 7px;border-radius:5px;margin-left:6px;font-weight:400;}
-  .card .sum{margin:4px 0 14px;color:#374151;font-size:13px;}
+  .card .sum{margin:4px 0 12px;color:#374151;font-size:13px;}
+  .why{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 13px;margin:0 0 14px;font-size:12.5px;color:#78350f;line-height:1.55;}
+  .why .lbl2{font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.04em;font-size:10.5px;display:block;margin-bottom:3px;}
+  .why b{color:#92400e;}
   svg{width:100%;height:auto;display:block;background:#fcfcfc;border:1px solid var(--line);border-radius:10px;}
   .pool{fill:#fafafa;stroke:#d1d5db;stroke-width:1.5;}
   .poollbl{font-size:12px;font-weight:650;fill:#374151;}
@@ -59,6 +62,7 @@
   <div class="card">
     <h2>1 · Prefill / Decode <span class="tag">phase split</span></h2>
     <p class="sum">The two inference phases have opposite hardware appetites — prefill is compute-bound, decode is memory-bandwidth-bound — so run them on pools sized (and chosen) for each.</p>
+    <div class="why"><span class="lbl2">Why split?</span>Prefill is <b>compute-bound</b> (one parallel pass over the prompt — wants FLOPs); decode is <b>memory-bandwidth-bound</b> (re-reads all weights every token). Fused on one pool, a long prefill stalls in-flight decodes (interference), and you're forced to pick one hardware + parallelism plan for two opposite profiles. Splitting lets you size — and choose silicon for — each phase independently.</div>
     <svg id="svg-pd" viewBox="0 0 680 200">
       <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker>
         <marker id="ahg" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#16a34a"/></marker></defs>
@@ -107,6 +111,7 @@
   <div class="card">
     <h2>2 · Attention / FFN — AFD <span class="tag">MoE · component split</span></h2>
     <p class="sum">AFD (Attention-FFN Disaggregation) splits each layer's <b>attention</b> (KV-bound, wants bandwidth) from its <b>FFN / expert bank</b> (capacity + compute-bound). <b>Distinct from wide-EP (scheme 3):</b> AFD splits the <em>component</em> (attention vs FFN onto different pools); wide-EP scales the <em>expert operator itself</em> across many devices. They're composable — MegaScale-Infer / Step-3 do AFD; DeepSeek / Kimi / CloudMatrix do wide-EP.</p>
+    <div class="why"><span class="lbl2">Why split?</span>Attention and the FFN have <b>opposite appetites</b>. Attention is <b>memory-bound</b> (dominated by KV-cache reads, low arithmetic intensity). The sparse MoE FFN is <em>also</em> memory-bound at normal batch — each expert's big weight matrix is read to serve only a few (top-K) tokens, so MFU is terrible. The fix is to <b>aggregate a large batch at the attention stage so each expert sees enough tokens to flip compute-bound (high MFU)</b> — only possible once attention and FFN are decoupled. Splitting also lets you <b>rate-match</b> (just enough attention chips to feed the FFN) and put each on its ideal hardware.</div>
     <svg id="svg-ae" viewBox="0 0 680 210">
       <defs><marker id="ah2" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker></defs>
       <rect x="74" y="46" width="172" height="120" rx="10" class="pool"/>
@@ -158,6 +163,7 @@
   <div class="card">
     <h2>3 · Wide expert parallelism <span class="tag">MoE · operator scaling</span></h2>
     <p class="sum">Spread the expert operator across many devices (EP degree), with attention data-parallel on the <em>same</em> devices. Wider EP → fewer experts per device → less weight read each (faster, cheaper per device) — but more all-to-all, and past the fabric domain it falls onto slow scale-out.</p>
+    <div class="why"><span class="lbl2">Why spread wide?</span>Not a phase split — it's about bandwidth. The expert pool is <b>HBM-bandwidth-bound, not FLOP-bound</b> (only top-K experts are read per token). Spreading experts across more devices shrinks each device's expert-weight read, so every expert effectively gets <b>more bandwidth — ideally a full device to itself (one expert per die)</b>. The limit is the all-to-all, which is only cheap inside a fast fabric domain — so a large scale-up fabric (NVL72 / Huawei UB) is the enabler.</div>
     <svg id="svg-we" viewBox="0 0 680 210">
       <defs><marker id="ahw" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L7,4 L0,8 z" fill="#2563eb"/></marker></defs>
       <g id="we-dev">
@@ -207,6 +213,7 @@
   <div class="card">
     <h2>4 · Encode / Prefill / Decode <span class="tag">multimodal · encoder split</span></h2>
     <p class="sum">For vision/audio models, split the modality <b>encoder</b> (compute-bound, saturates tensor cores, low HBM demand) from the LLM (prefill + decode). The encoder runs on its own right-sized pool; image embeddings cross to the LLM once per request.</p>
+    <div class="why"><span class="lbl2">Why split?</span>The encoder is <b>compute-bound</b> (a vision transformer saturating tensor cores, modest memory), while decode is <b>memory-bandwidth-bound</b> — a hardware mismatch. Fused, the encoder monopolizes compute and stalls decodes, and you can't right-size it or run it on cheaper hardware. Splitting lets the encoder run on its own (often cheaper / older) compute-dense pool while the LLM keeps its bandwidth-optimized silicon.</div>
     <svg id="svg-ep" viewBox="0 0 680 190">
       <defs><marker id="ahe" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker>
         <marker id="aheg" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#16a34a"/></marker></defs>
@@ -255,6 +262,7 @@
   <div class="card">
     <h2>5 · Speculative decoding <span class="tag">draft / target split</span></h2>
     <p class="sum">A small draft model proposes K tokens; the big target verifies them all in one pass — amortizing the target's expensive weight read over many tokens.</p>
+    <div class="why"><span class="lbl2">Why split?</span>The draft and target models have <b>very different profiles</b> — the draft is tiny and latency-critical (runs autoregressively), the target is large and compute-heavy (verifies K tokens at once) and wants a different tensor-parallel degree. Co-locating causes compute imbalance and poor amortization at low batch. Splitting puts the draft on a latency-optimized cheap chip and the target on a big one.</div>
     <svg id="svg-sd" viewBox="0 0 680 210">
       <defs><marker id="ah3" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker></defs>
       <rect x="60" y="62" width="150" height="92" rx="10" class="pool"/>
