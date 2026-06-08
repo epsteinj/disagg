@@ -16,14 +16,16 @@ benchmark catalogue. Engine extracted verbatim to `src/engine/core.js` (ref line
   Huawei also fp16 500→**780**, mem_bw 1.6→**3.2** (per-package). Maia power 700→**500**.
 - **Provenance tags** on every chip; hyperscaler ASIC costs marked `cost imputed`.
 - **Retained per user:** Tensordyne, Positron Atlas/Asimov (tagged `vendor-claimed`, numbers untouched).
-- **d-Matrix (from user, 2026-06-06):** Corsair modeled SRAM-resident (mem_bw 150 TB/s, mem_cap 2 GB fast
-  tier, MXINT compute 0.6/2.4/9.6 PF, switched-PCIe interconnect, rack_size 72). Gen-2 Raptor added (roadmap).
-  Verified-spec but **NOT calibrated** — over-predicts at B=1 (35k tok/s) until a tok/s anchor pins comp_eff/bw_eff;
-  flips to interconnect-bound at batch. Still need: tok/s anchor, cost, power. Note: "SpecDec + Expert
-  disaggregation ready today" — on-thesis for the disagg axes.
-- **Pending:** d-Matrix calibration anchor; MoE low-batch bug **M1 still open** (DeepSeek-V3 B=1 now 770 tok/s —
-  better but still ~10× high; needs the dedicated fix, not just bw_eff). Two-tier (SRAM/LPDDR) memory model also
-  open — affects d-Matrix, Positron, Cerebras.
+- **d-Matrix Corsair — CALIBRATED 2026-06-08** to vendor anchor (d-Matrix SC24 / EE Times, found via research):
+  Llama3-70B **~500 tok/s/user, ~30k tok/s aggregate @ batch 48–64, 64-card rack, MXINT8**. Modeled SRAM-resident
+  (weights+KV pinned in 2 GB/card SRAM; LPDDR cold tier removed — "capacity mode" is a separate slow path);
+  `bw_eff 0.0078` calibrated-effective (the realized rate is interconnect/pipeline-gated, not raw 150 TB/s).
+  Engine now reproduces ~520 tok/s/user, ~26–33k aggregate (70B) and ~720/user, ~43k (8B). Net effect: Corsair
+  is now a **latency premium** chip — ~10× B200's per-user interactivity (525 vs 46) at ~2× the $/Mtok — not the
+  cost-dominator the uncalibrated model wrongly made it (was 14k tok/s/user, $0.19/Mtok). Caveat: takes the
+  vendor headline at face value; The Register argues real Ethernet scale-out degrades it further. cost/power still est.
+- **Pending:** MoE low-batch bug **M1** (DeepSeek-V3 B=1 ~51 tok/s after fix — acceptable). KV-cache/memory
+  disaggregation axis (biggest remaining regime gap). Positron still vendor-claimed (retained per user).
 
 ---
 

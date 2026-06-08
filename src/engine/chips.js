@@ -71,24 +71,24 @@ export const chipPerfSpecs = {
   // NOTE (unapplied, per user): 2.1 PFLOPS (×3 precisions) has no public source; mem_cap may be 144 GB (not 96).
   'tensordyne':        { peak_fp16: 2.1e15,    peak_fp8: 2.1e15,   peak_fp4: 2.1e15,    mem_bw: 4.2e12,   mem_cap: 96e9,    interconnect_bw: 500e9,    xc_interconnect_bw: 500e9,    rack_size: 144,  scaleout_bw: 100e9,  cost_usd: 25000,   power_w: 350,    comp_eff: 0.50, bw_eff: 0.70, prov: 'vendor-claimed',      name: 'Tensordyne',            ic_name: 'Juniper cell fabric' },
 
-  // ── d-Matrix Corsair (Gen 1) ──
-  // From user (2026-06-06): vendor slide + interconnect deck. KEY: SRAM-RESIDENT paradigm — model lives in
-  //   aggregate SRAM across many cards, so effective BW = 150 TB/s SRAM (NOT the 0.4 TB/s LPDDR tier).
-  //   Slide: "2 GB SRAM · 150 TB/s · PCIe Gen5"; "32-card configs cover 120B / 4-bit" (60 GB ≈ 32×2 GB SRAM ✓);
-  //   "SpecDec + Expert disaggregation ready today" (two of this tool's disagg axes, productized).
-  //   APPLIED: mem_bw 4e12→150e12 (SRAM); mem_cap 256e9→2e9 (FAST SRAM tier gates card count, Cerebras-style;
-  //     256 GB LPDDR remains as cold capacity/KV backing — single-tier engine can't yet model both, see limitation).
-  //   Compute = MXINT (block), not IEEE: peak_fp16≡MXINT16 0.6e15, peak_fp8≡MXINT8 2.4e15, peak_fp4≡MXINT4 9.6e15
-  //     (Hot Chips 2025 via audit). Interconnect from deck: card↔card switched PCIe ~0.128e12; rack_size 72.
-  // STILL PENDING: cost_usd (no public price), power_w (~275–550 W measured vs 600 placeholder), and a tok/s
-  //   ANCHOR. ⚠ Without the anchor the SRAM-resident model OVER-predicts at low batch (150 TB/s × many cards →
-  //   implausible per-user tok/s), same failure class as Groq/Cerebras before calibration. comp_eff/bw_eff left
-  //   at default pending a real benchmark to calibrate against.
-  // Two-tier: weights SRAM-resident (weight_tier:'fast' → scale cards so weights fit 2 GB fast tier),
-  //   KV/overflow in 256 GB LPDDR cold tier @ ~0.4 TB/s (so long context falls back to the slow tier).
-  'dmatrix-corsair':   { peak_fp16: 0.6e15,    peak_fp8: 2.4e15,   peak_fp4: 9.6e15,    mem_bw: 150e12,   mem_cap: 2e9,     mem_bw_cold: 0.4e12, mem_cap_cold: 256e9, weight_tier: 'fast', interconnect_bw: 0.128e12, xc_interconnect_bw: 0.128e12, rack_size: 72,   scaleout_bw: 100e9,  cost_usd: 38000,   power_w: 600,    comp_eff: 0.50, bw_eff: 0.70, prov: 'specs-verified; needs tok/s anchor', name: 'd-Matrix Corsair', ic_name: 'DMX die-to-die + switched PCIe + ESUN' },
+  // ── d-Matrix Corsair (Gen 1) — CALIBRATED to vendor anchor (2026 research) ──
+  // ANCHOR (d-Matrix SC24, Nov 2024; EE Times): Llama3-70B at ~500 tok/s/user (2 ms/token) and ~30,000 tok/s
+  //   AGGREGATE on a 64-CARD RACK at batch 48–64, MXINT8. (Llama3-8B: 60,000 tok/s / 1 ms/token on an 8-card
+  //   server.) Vendor-claimed, no MLPerf — but internally consistent: 500 tok/s/user × ~60 streams ≈ 30k.
+  // REGIME: SRAM-RESIDENT — weights AND KV pinned in 2 GB/card SRAM, fanned across the rack; the batch ceiling
+  //   (~48–64) IS the SRAM-capacity limit. So mem_cap = 2e9 gates cards (weights+KV must fit SRAM) and KV uses
+  //   the SRAM tier — the 256 GB LPDDR cold tier is REMOVED here: "capacity mode" (weights/KV in LPDDR) is a
+  //   separate ~10–80× slower path (~5–45 tok/s/user), not the competitive operating point we model.
+  // bw_eff = 0.0078 is a CALIBRATED-EFFECTIVE constant (Groq/Cerebras-style): the realized ~500 tok/s/user is
+  //   gated by interconnect + pipeline depth across the ~36–80 sharded cards, NOT the raw 150 TB/s SRAM.
+  //   Reproduces ~520 tok/s/user and ~26–33k aggregate for 70B at batch 48–64 (and ~720/user, ~43k for 8B).
+  //   Intra-rack fabric set to DMX 1 TB/s with rack_size 128 so the operating deployment stays one domain.
+  //   Compute = MXINT (0.6/2.4/9.6 PF). NOTE: this takes the vendor headline at face value — The Register
+  //   argues the real JetStream/Ethernet scale-out (~100 GB/s/node) would degrade per-user further at scale.
+  // STILL ESTIMATE: cost_usd (no public price); power 550 W (real 275 W @ 0.8 GHz – 550 W @ 1.2 GHz).
+  'dmatrix-corsair':   { peak_fp16: 0.6e15,    peak_fp8: 2.4e15,   peak_fp4: 9.6e15,    mem_bw: 150e12,   mem_cap: 2e9,     weight_tier: 'fast', interconnect_bw: 1e12, xc_interconnect_bw: 1e12, rack_size: 128,  scaleout_bw: 100e9,  cost_usd: 38000,   power_w: 550,    comp_eff: 1.0, bw_eff: 0.0078, prov: 'calibrated-effective (vendor, no MLPerf); cost est', name: 'd-Matrix Corsair', ic_name: 'DMX die-to-die (1 TB/s) + ESUN scale-out' },
   // ── d-Matrix Raptor (Gen 2, NEAR-TERM, 3D-DRAM) ── roadmap. Slide: "32 GB/card · ~100 TB/s via 3D-DRAM",
-  //   "2T+ model capacity in single deployment" (trillion-param MoE without scale-out). Compute unknown —
-  //   assumed ≥ Corsair MXINT pending data. 32 GB fast tier per card dramatically cuts the card count vs Corsair.
-  'dmatrix-raptor':    { peak_fp16: 0.6e15,    peak_fp8: 2.4e15,   peak_fp4: 9.6e15,    mem_bw: 100e12,   mem_cap: 32e9,    interconnect_bw: 0.128e12, xc_interconnect_bw: 0.128e12, rack_size: 72,   scaleout_bw: 100e9,  cost_usd: 38000,   power_w: 600,    comp_eff: 0.50, bw_eff: 0.70, prov: 'roadmap; compute assumed', name: 'd-Matrix Raptor (3D-DRAM, est)', ic_name: '3D-DRAM + switched PCIe + ESUN' },
+  //   "2T+ capacity single deployment". No Gen-2 anchor — bw_eff extrapolated from Corsair's calibration (the
+  //   per-user effective rate is interconnect/pipeline-gated, so similar); 32 GB SRAM cuts card count vs Corsair.
+  'dmatrix-raptor':    { peak_fp16: 0.6e15,    peak_fp8: 2.4e15,   peak_fp4: 9.6e15,    mem_bw: 100e12,   mem_cap: 32e9,    weight_tier: 'fast', interconnect_bw: 0.128e12, xc_interconnect_bw: 0.128e12, rack_size: 72,   scaleout_bw: 100e9,  cost_usd: 38000,   power_w: 600,    comp_eff: 1.0, bw_eff: 0.04, prov: 'roadmap; bw_eff extrapolated from Corsair', name: 'd-Matrix Raptor (3D-DRAM, est)', ic_name: '3D-DRAM + switched PCIe + ESUN' },
 };
