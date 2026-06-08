@@ -69,11 +69,37 @@
     background: linear-gradient(90deg, #16a34a, #eab308, #dc2626); }
   .small { font-size: 11px; color: var(--muted); }
   .err { color: var(--bad); font-size: 12px; }
+  .headlink { float: right; font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: underline; font-weight: 500; }
+  .overlay { position: fixed; inset: 0; background: rgba(15,18,25,.55); display: none; z-index: 50;
+    align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 20px; }
+  .overlay.open { display: flex; }
+  .sheet { background: #fff; border-radius: 12px; max-width: 860px; width: 100%; padding: 22px 26px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+  .sheet h2 { margin: 0 0 2px; font-size: 18px; }
+  .sheet .close { float: right; cursor: pointer; border: 1px solid var(--line); background:#fff;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; color: var(--muted); }
+  .topo { display: grid; grid-template-columns: 1fr 150px 1fr; gap: 0; align-items: stretch; margin: 18px 0 6px; }
+  .poolbox { border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: #fafafa; }
+  .poolbox .role { font-size: 10px; text-transform: uppercase; letter-spacing:.05em; color: var(--muted); font-weight: 700; }
+  .poolbox .big { font-size: 15px; font-weight: 650; margin: 3px 0 6px; }
+  .poolbox .arr { font-size: 12px; color: #374151; line-height: 1.5; }
+  .linkcol { text-align: center; padding: 8px 10px; color: var(--muted); display:flex; flex-direction:column; justify-content:center; }
+  .linkcol .arrow { font-size: 24px; color: var(--accent); line-height: 1; }
+  .linkcol .fab { font-family: var(--mono); font-size: 10.5px; color:#374151; margin-top:4px; line-height:1.5; }
+  .kv { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px 18px; margin-top: 16px; }
+  .kv .c { border-top: 1px solid var(--line); padding-top: 6px; }
+  .kv .c .k { font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing:.03em; }
+  .kv .c .v { font-family: var(--mono); font-size: 14px; }
+  .scheme { border-left: 3px solid var(--het); padding: 2px 0 2px 14px; margin: 16px 0; }
+  .scheme h3 { margin: 0 0 4px; font-size: 14px; }
+  .scheme p { margin: 4px 0; font-size: 13px; color:#374151; line-height:1.55; }
+  .tag2 { font-family: var(--mono); font-size: 10.5px; background:#f3f4f6; padding:1px 6px; border-radius:4px; color:var(--muted); }
+  .hintclick { font-size: 11px; color: var(--muted); margin-top: 4px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Disaggregation Explorer</h1>
+  <h1>Disaggregation Explorer <span class="headlink" id="openSchemes">How the axes work ↗</span></h1>
   <p>Split prefill and decode across <em>different</em> chips, charge the KV-cache transfer between pools, and
   trace the throughput × interactivity × $/token frontier. Reveals whether a <b>heterogeneous</b> fleet beats a
   homogeneous one — and which silicon wins which phase. Engine forked + audited from <code>transformer_math.html</code>.</p>
@@ -162,6 +188,7 @@
         <span>cheaper</span><span class="ramp"></span><span>pricier&nbsp;($/Mtok)</span>
         <span style="margin-left:12px;">◆ heterogeneous &nbsp; ○ homogeneous &nbsp; — dashed = frontier</span>
       </div>
+      <div class="hintclick">▸ Click any point for its literal scale-up / scale-out deployment setup.</div>
     </div>
     <div class="panel">
       <h2>Pareto-frontier configurations</h2>
@@ -171,6 +198,8 @@
   </main>
 </div>
 <div id="tip"></div>
+<div class="overlay" id="detailOverlay"><div class="sheet" id="detailSheet"></div></div>
+<div class="overlay" id="schemesOverlay"><div class="sheet" id="schemesSheet"></div></div>
 
 <script type="module">
 import { sweep, paretoFrontier } from './src/engine/disagg.js';
@@ -368,8 +397,90 @@ function drawChart(pts, frontier, frontierSet, cfg){
       tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; tip.style.opacity=1;
     });
     el.addEventListener('mouseleave',()=>tip.style.opacity=0);
+    el.addEventListener('click',()=>{ tip.style.opacity=0; openDetail(pts[+el.dataset.i]); });
   });
 }
+
+// ── Detail page: literal scale-up/scale-out deployment for a clicked config ──
+const fmtNum = v => v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(1)+'k':v.toFixed(0);
+const fmtBytes = b => b>=1e9?(b/1e9).toFixed(2)+' GB':b>=1e6?(b/1e6).toFixed(1)+' MB':b>=1e3?(b/1e3).toFixed(0)+' KB':b.toFixed(0)+' B';
+const fmtBW = b => b>=1e12?(b/1e12).toFixed(2)+' TB/s':(b/1e9).toFixed(0)+' GB/s';
+const fmtT = t => t>=1?t.toFixed(2)+'s':(t*1e3).toFixed(1)+'ms';
+
+function arrangeText(d){
+  const c = chipPerfSpecs[d.chipKey], dom = c.rack_size||8;
+  const ml = d.model?`<br><span class="small">running: ${d.model}</span>`:'';
+  if (d.role==='Prefill'){
+    const perTxt = d.perReplica>1 ? `${d.perReplica} chips (TP over ${c.ic_name})` : `1 chip`;
+    return `${d.replicas} data-parallel replica${d.replicas>1?'s':''} × ${perTxt}<br><span class="small">sized to feed the decode pool</span>`;
+  }
+  let body;
+  if (d.total<=1) body='single chip — no intra-pool comm';
+  else if (d.total<=dom) body=`tensor-parallel over ${c.ic_name}<br>(${fmtBW(c.interconnect_bw)}, ≤${dom}-chip domain)`;
+  else body=`${Math.ceil(d.total/dom)}× ${c.ic_name} domains<br>scale-out (${fmtBW(c.scaleout_bw)}) between`;
+  return `<span class="small">${body}</span>${ml}`;
+}
+function linkHtml(d){
+  if (d.axis==='prefill-decode') return `<div class="arrow">▶</div><div class="fab">${d.link.what}<br>${fmtBytes(d.link.bytes)} · ${d.link.mode}<br>@ ${fmtBW(d.link.bw)} → ${fmtT(d.link.time)}<br><span class="small">${d.link.freq}</span></div>`;
+  if (d.axis==='attn-expert') return `<div class="arrow">⇄</div><div class="fab">${d.link.what}<br>${fmtBytes(d.link.bytesPerLayer)}/layer · ${d.link.mode}<br>@ ${fmtBW(d.link.bw)}<br><span class="small">${d.link.freq}</span></div>`;
+  return `<div class="arrow">⇄</div><div class="fab">${d.link.what}<br><span class="small">${d.link.note}<br>${d.link.freq}</span></div>`;
+}
+function openDetail(p){
+  const d=p.detail, A=d.poolA, B=d.poolB;
+  const econ = [
+    ['Interactivity', p.interactivity.toFixed(1)+' tok/s/user'],
+    ['Throughput', fmtNum(p.throughput)+' tok/s'],
+    ['$ / M tokens', '$'+p.costPerMtok.toFixed(3)],
+    (p.ttft>0)?['TTFT', fmtT(p.ttft)]:null,
+    ['Bind', p.decodeBind],
+    ['System cost (capex)', '$'+fmtNum(p.totalCost)],
+  ];
+  if (d.axis==='spec-decode') econ.push(['Speedup vs target-alone','×'+d.speedup.toFixed(2)],['Acceptance α · K', d.alpha+' · '+d.K]);
+  const econHtml = econ.filter(Boolean).map(([k,v])=>`<div class="c"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  $('detailSheet').innerHTML = `
+    <span class="close" id="closeDetail">✕ close</span>
+    <h2>${shortName(p.prefillChip)} → ${shortName(p.decodeChip)} <span class="tag2">${d.axis}</span> <span class="tag2">Bd=${p.Bd}</span> <span class="tag2">${p.heterogeneous?'heterogeneous':'homogeneous'}</span></h2>
+    <p class="small">The literal deployment these metrics are computed from — pool sizing, intra-pool fabric, and what crosses between pools.</p>
+    <div class="topo">
+      <div class="poolbox"><div class="role">${A.role} pool</div><div class="big">${A.total}× ${shortName(A.chipKey)}</div><div class="arr">${arrangeText(A)}</div></div>
+      <div class="linkcol">${linkHtml(d)}</div>
+      <div class="poolbox"><div class="role">${B.role} pool</div><div class="big">${B.total}× ${shortName(B.chipKey)}</div><div class="arr">${arrangeText(B)}</div></div>
+    </div>
+    <div class="kv">${econHtml}</div>`;
+  $('closeDetail').onclick = ()=>$('detailOverlay').classList.remove('open');
+  $('detailOverlay').classList.add('open');
+}
+
+// ── Schemes explainer page ──
+const SCHEMES_HTML = `
+  <span class="close" id="closeSchemes">✕ close</span>
+  <h2>Disaggregation schemes</h2>
+  <p class="small">How each axis splits the model across separate chip pools, what crosses between them, and when it wins.</p>
+  <div class="scheme">
+    <h3>1 · Prefill / Decode <span class="tag2">phase split</span></h3>
+    <p>Inference has two phases with opposite hardware appetites. <b>Prefill</b> digests the whole prompt in one parallel pass — compute-bound, wants raw FLOPs. <b>Decode</b> generates tokens one at a time, re-reading all weights from memory every step — bandwidth-bound, wants HBM bandwidth + capacity.</p>
+    <p>Splitting them onto separate pools lets you size each for its own bottleneck and use different silicon. <b>What crosses:</b> the prompt's KV cache, shipped prefill→decode once per request — over the shared scale-up fabric if both pools are the same chip and fit one domain, else scale-out (adds to TTFT). <b>Wins when:</b> input:output ratios are skewed and you want to right-size each phase independently.</p>
+  </div>
+  <div class="scheme">
+    <h3>2 · Attention / Expert <span class="tag2">MoE only · component split</span></h3>
+    <p>For mixture-of-experts models, split a layer's <b>attention</b> (KV-bound, wants bandwidth) from its <b>expert FFN</b> (capacity + compute-bound, must hold the whole expert bank) onto separate pools.</p>
+    <p><b>What crosses:</b> the hidden-state activations — <em>every layer, both directions</em> (attention→experts, then back). That's a far higher-frequency transfer than prefill/decode's once-per-request KV ship, so it's only viable over a fast fabric. <b>Wins when:</b> experts dominate capacity and you want bandwidth-rich chips for attention without paying for them to also store all the experts.</p>
+  </div>
+  <div class="scheme">
+    <h3>3 · Speculative decoding <span class="tag2">draft / target split</span></h3>
+    <p>A small, fast <b>draft</b> model proposes K tokens; the big <b>target</b> model verifies them all in one batched pass. Expected tokens emitted per cycle ≈ (1−α^(K+1))/(1−α), where α is the per-token acceptance rate.</p>
+    <p>Disaggregate the draft (cheap, latency-optimized chip) from the target (big chip). <b>What crosses:</b> just K token-ids each way — negligible bytes. <b>Wins when:</b> acceptance is high (well-matched draft/target) — ~2–3× per-user speedup for the cost of one extra forward pass, by amortizing the target's expensive weight read over several tokens.</p>
+  </div>
+  <p class="small" style="margin-top:18px; line-height:1.6;"><b>Scale-up</b> = a vendor's intra-rack fabric (NVLink/NVL72, Infinity Fabric, ICI, NeuronLink, Credo, Juniper…) — high bandwidth, limited domain size, single-vendor. <b>Scale-out</b> = cross-rack InfiniBand / Ethernet — lower bandwidth, unbounded, vendor-agnostic. Mixed-vendor pools can only talk scale-out.</p>`;
+function openSchemes(){
+  $('schemesSheet').innerHTML = SCHEMES_HTML;
+  $('closeSchemes').onclick = ()=>$('schemesOverlay').classList.remove('open');
+  $('schemesOverlay').classList.add('open');
+}
+// close overlays on background click or Escape
+[['detailOverlay'],['schemesOverlay']].forEach(([id])=>$(id).addEventListener('click',e=>{ if(e.target===$(id)) $(id).classList.remove('open'); }));
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ $('detailOverlay').classList.remove('open'); $('schemesOverlay').classList.remove('open'); }});
+$('openSchemes').addEventListener('click', openSchemes);
 
 function renderHeadline(pts, slo){
   // cheapest config that MEETS the workload's interactivity target, and hetero-vs-homo at that bar.

@@ -79,6 +79,12 @@ export function computeDisaggPoint({ modelKey, prefillChip, decodeChip, Bd, T_in
     Np, Nd, prefillCost, decodeCost, totalCost,
     decodeBind: rd.overallBinds, interFabric: xfer.mode,
     heterogeneous: prefillChip !== decodeChip,
+    detail: {
+      axis: 'prefill-decode',
+      poolA: { role: 'Prefill', chipKey: prefillChip, total: Np, replicas: prefillReplicas, perReplica: rp.N_chips, time: prefillTime },
+      poolB: { role: 'Decode', chipKey: decodeChip, total: Nd },
+      link: { what: 'KV cache (prompt)', bytes: kvBytesPerReq, mode: xfer.mode, bw: xfer.bw, time: kvTransferTime, freq: 'once per request' },
+    },
   };
 }
 
@@ -187,6 +193,12 @@ export function computeAttnExpertPoint({ modelKey, attnChip, expertChip, Bd, T_i
     Np: Na, Nd: Ne, totalCost,
     decodeBind: transferFrac > 0.4 ? 'xfer-bound' : (expertLayer > attnLayer ? 'expert' : 'attention'),
     interFabric: xfer.mode, heterogeneous: attnChip !== expertChip, transferFrac,
+    detail: {
+      axis: 'attn-expert',
+      poolA: { role: 'Attention', chipKey: attnChip, total: Na },
+      poolB: { role: 'Expert', chipKey: expertChip, total: Ne },
+      link: { what: 'Hidden-state activations', bytesPerLayer: 2 * Bd * model.d * bpvA, mode: xfer.mode, bw: xfer.bw, freq: `every layer × 2 directions (${model.L} layers)`, transferFrac },
+    },
   };
 }
 
@@ -218,6 +230,13 @@ export function computeSpecDecodePoint({ modelKey, targetChip, draftChip, draftM
     Np: Nd, Nd: Nt, totalCost, speedup,
     decodeBind: `spec ×${speedup.toFixed(1)}`,
     heterogeneous: draftChip !== targetChip,
+    detail: {
+      axis: 'spec-decode',
+      poolA: { role: 'Draft', chipKey: draftChip, total: Nd, model: draft.name },
+      poolB: { role: 'Target', chipKey: targetChip, total: Nt },
+      link: { what: 'Draft proposals + verification', note: 'K token-ids each way — negligible bytes', freq: 'per spec cycle' },
+      K, alpha, nAcc, speedup, tDraft, tTarget,
+    },
   };
 }
 
