@@ -129,7 +129,7 @@
     <div class="field">
       <label>View</label>
       <select id="view">
-        <option value="ti">Throughput × Interactivity</option>
+        <option value="ti">Interactivity × Throughput</option>
         <option value="ci">$/Mtok × Interactivity (cost frontier)</option>
       </select>
     </div>
@@ -280,13 +280,13 @@ function run(){
   const cfg = view === 'ci'
     ? { xKey:'interactivity', yKey:'costPerMtok', xMax:true, yMax:false,
         xLab:'Interactivity — tok/s/user (→ more interactive)', yLab:'$ / M tokens (↓ cheaper)' }
-    : { xKey:'throughput', yKey:'interactivity', xMax:true, yMax:true,
-        xLab:'Throughput — aggregate output tok/s (→)', yLab:'Interactivity — tok/s/user (↑)' };
+    : { xKey:'interactivity', yKey:'throughput', xMax:true, yMax:true,
+        xLab:'Interactivity — tok/s/user (→ more interactive)', yLab:'Throughput — aggregate output tok/s (↑)' };
   const frontier = paretoFrontier(pts, cfg);
   const frontierSet = new Set(frontier);
 
   const slo = Math.max(1, parseFloat($('slo').value)||30);
-  $('chartTitle').textContent = view==='ci' ? 'Cost frontier' : 'Throughput × interactivity frontier';
+  $('chartTitle').textContent = view==='ci' ? 'Cost frontier' : 'Interactivity × throughput frontier';
   $('chartHint').textContent = `${modelKey} · T_in=${T_in} T_out=${T_out} · ${precision.toUpperCase()} · target ≥${slo} tok/s/user · ${pts.length} configs swept`;
   drawChart(pts, frontier, frontierSet, cfg);
   renderHeadline(pts, slo);
