@@ -111,7 +111,9 @@
       <label>Disaggregation axis</label>
       <select id="axis">
         <option value="prefill-decode">Prefill / Decode</option>
-        <option value="attn-expert">Attention / Expert (MoE)</option>
+        <option value="afd">Attention / FFN — AFD (MoE)</option>
+        <option value="wide-ep">Wide expert parallelism (MoE)</option>
+        <option value="epd">Encode / Prefill / Decode (multimodal)</option>
         <option value="spec-decode">Speculative decoding</option>
       </select>
     </div>
@@ -125,6 +127,19 @@
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
         <div><span class="small">K (proposed)</span><input type="text" id="specK" value="4"></div>
         <div><span class="small">α (accept rate)</span><input type="text" id="specAlpha" value="0.7"></div>
+      </div>
+    </div>
+    <div class="field" id="wideParams" style="display:none;">
+      <label>Expert-parallel degrees</label>
+      <input type="text" id="epDegrees" value="8,16,32,64,128,256">
+      <span class="small">devices the experts spread across (sweep). One-expert-per-die when EP = #experts.</span>
+    </div>
+    <div class="field" id="epdParams" style="display:none;">
+      <label>Encoder (multimodal)</label>
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+        <div><span class="small">img / req</span><input type="text" id="epdImgs" value="1"></div>
+        <div><span class="small">GFLOP / img</span><input type="text" id="epdGflops" value="200"></div>
+        <div><span class="small">tok / img</span><input type="text" id="epdTokens" value="256"></div>
       </div>
     </div>
     <div class="field">
@@ -168,7 +183,7 @@
       </select>
       <span class="small">scale-up fabric is per-vendor (NVLink / Infinity Fabric / ICI / NeuronLink…); mixed-vendor pools can't share one → scale-out</span>
     </div>
-    <div class="field">
+    <div class="field" id="fieldA">
       <label id="labelA">Prefill pool (compute-dense)</label>
       <div class="chips" id="prefillChips"></div>
     </div>
@@ -206,7 +221,9 @@ import { chipPerfSpecs, modelPresets } from './src/engine/core.js';
 
 const AXIS_LABELS = {
   'prefill-decode': ['Prefill pool (compute-dense)', 'Decode pool (bandwidth / latency)'],
-  'attn-expert':    ['Attention pool (KV / bandwidth)', 'Expert pool (capacity / compute)'],
+  'afd':            ['Attention pool (KV / bandwidth)', 'FFN / Expert pool (capacity / compute)'],
+  'wide-ep':        ['— not used (wide-EP is one homogeneous pool) →', 'EP pool — the MoE chip'],
+  'epd':            ['Encoder pool (vision · compute-dense)', 'LLM pool (prefill + decode)'],
   'spec-decode':    ['Draft pool (small / fast)', 'Target pool (big / verify)'],
 };
 // Default workloads (ported from transformer_math.html): set T_in / T_out (from input:output ratio)
@@ -275,8 +292,11 @@ function applyAxisChrome(){
   $('labelA').textContent = AXIS_LABELS[axis][0];
   $('labelB').textContent = AXIS_LABELS[axis][1];
   $('specParams').style.display = axis === 'spec-decode' ? '' : 'none';
-  // attention/expert is MoE-only → restrict model list
-  const onlyMoe = axis === 'attn-expert';
+  $('wideParams').style.display = axis === 'wide-ep' ? '' : 'none';
+  $('epdParams').style.display = axis === 'epd' ? '' : 'none';
+  $('fieldA').style.display = axis === 'wide-ep' ? 'none' : '';  // wide-EP is one homogeneous pool
+  // AFD and wide-EP are MoE-only → restrict the model list
+  const onlyMoe = axis === 'afd' || axis === 'wide-ep';
   const cur = $('model').value;
   fillModels(onlyMoe);
   if ([...$('model').options].some(o=>o.value===cur)) $('model').value = cur;
@@ -293,15 +313,20 @@ function run(){
   const batches = $('batches').value.split(',').map(s=>parseInt(s.trim())).filter(n=>n>0);
   const chipsA = checked('prefillChips');
   const chipsB = checked('decodeChips');
-  if (!chipsA.length || !chipsB.length || !batches.length){
-    $('chart').innerHTML = '<p class="err">Pick at least one chip in each pool and one batch size.</p>';
+  const needA = axis !== 'wide-ep';  // wide-EP uses only pool B (one homogeneous pool)
+  if ((needA && !chipsA.length) || !chipsB.length || !batches.length){
+    $('chart').innerHTML = '<p class="err">Pick at least one chip in each active pool and one batch size.</p>';
     $('table').innerHTML=''; $('headline').innerHTML=''; return;
   }
   const pts = sweep({ axis, modelKey, chipsA, chipsB, batches, T_in, T_out, precision,
     topology: $('topology').value,
     draftModelKey: $('draftModel').value,
     K: Math.max(1, parseInt($('specK').value)||4),
-    alpha: Math.min(0.99, Math.max(0.1, parseFloat($('specAlpha').value)||0.7)) });
+    alpha: Math.min(0.99, Math.max(0.1, parseFloat($('specAlpha').value)||0.7)),
+    epDegrees: $('epDegrees').value.split(',').map(s=>parseInt(s.trim())).filter(n=>n>0),
+    imagesPerReq: Math.max(1, parseInt($('epdImgs').value)||1),
+    encGflopsPerImage: Math.max(1, parseFloat($('epdGflops').value)||200),
+    imgTokensPerImage: Math.max(1, parseInt($('epdTokens').value)||256) });
   if (!pts.length){ $('chart').innerHTML='<p class="err">No feasible configs (attention/expert needs an MoE model).</p>'; $('table').innerHTML=''; $('headline').innerHTML=''; return; }
 
   const view = $('view').value;
@@ -420,8 +445,9 @@ function arrangeText(d){
   return `<span class="small">${body}</span>${ml}`;
 }
 function linkHtml(d){
-  if (d.axis==='prefill-decode') return `<div class="arrow">▶</div><div class="fab">${d.link.what}<br>${fmtBytes(d.link.bytes)} · ${d.link.mode}<br>@ ${fmtBW(d.link.bw)} → ${fmtT(d.link.time)}<br><span class="small">${d.link.freq}</span></div>`;
-  if (d.axis==='attn-expert') return `<div class="arrow">⇄</div><div class="fab">${d.link.what}<br>${fmtBytes(d.link.bytesPerLayer)}/layer · ${d.link.mode}<br>@ ${fmtBW(d.link.bw)}<br><span class="small">${d.link.freq}</span></div>`;
+  if (d.axis==='prefill-decode'||d.axis==='epd') return `<div class="arrow">▶</div><div class="fab">${d.link.what}<br>${fmtBytes(d.link.bytes)} · ${d.link.mode}<br>@ ${fmtBW(d.link.bw)} → ${fmtT(d.link.time)}<br><span class="small">${d.link.freq}</span></div>`;
+  if (d.axis==='afd') return `<div class="arrow">⇄</div><div class="fab">${d.link.what}<br>${fmtBytes(d.link.bytesPerLayer)}/layer · ${d.link.mode}<br>@ ${fmtBW(d.link.bw)}<br><span class="small">${d.link.freq}</span></div>`;
+  if (d.axis==='wide-ep') return `<div class="arrow">⇄</div><div class="fab">${d.link.what}<br>${d.link.mode}<br><span class="small">${d.link.freq}</span></div>`;
   return `<div class="arrow">⇄</div><div class="fab">${d.link.what}<br><span class="small">${d.link.note}<br>${d.link.freq}</span></div>`;
 }
 function openDetail(p){
@@ -435,6 +461,8 @@ function openDetail(p){
     ['System cost (capex)', '$'+fmtNum(p.totalCost)],
   ];
   if (d.axis==='spec-decode') econ.push(['Speedup vs target-alone','×'+d.speedup.toFixed(2)],['Acceptance α · K', d.alpha+' · '+d.K]);
+  if (d.axis==='wide-ep') econ.push(['EP degree', d.EP+(d.onePerDie?' (1 expert/die)':'')],['Experts / device', d.perDeviceExperts.toFixed(1)],['All-to-all share', (d.commFrac*100).toFixed(0)+'%']);
+  if (d.axis==='epd') econ.push(['Encoder time / req', fmtT(d.encTime)],['Image tokens', d.imgTokens]);
   const econHtml = econ.filter(Boolean).map(([k,v])=>`<div class="c"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
   $('detailSheet').innerHTML = `
     <span class="close" id="closeDetail">✕ close</span>
@@ -524,7 +552,7 @@ function renderTable(frontier){
 }
 
 // wire events
-['axis','model','prec','batches','view','topology','draftModel','specK','specAlpha'].forEach(id=>$(id).addEventListener('change',run));
+['axis','model','prec','batches','view','topology','draftModel','specK','specAlpha','epDegrees','epdImgs','epdGflops','epdTokens'].forEach(id=>$(id).addEventListener('change',run));
 $('workload').addEventListener('change', ()=>{ applyWorkload(); run(); });
 ['tin','tout','slo'].forEach(id=>$(id).addEventListener('change', ()=>{ markCustom(); run(); }));
 $('prefillChips').addEventListener('change',run);

@@ -105,8 +105,8 @@
 
   <!-- 2 · ATTENTION / EXPERT -->
   <div class="card">
-    <h2>2 · Attention / Expert <span class="tag">MoE only · component split</span></h2>
-    <p class="sum">For mixture-of-experts models, split each layer's attention (KV-bound, wants bandwidth) from its expert FFN (capacity + compute-bound, holds the whole expert bank).</p>
+    <h2>2 · Attention / FFN — AFD <span class="tag">MoE · component split</span></h2>
+    <p class="sum">AFD (Attention-FFN Disaggregation) splits each layer's <b>attention</b> (KV-bound, wants bandwidth) from its <b>FFN / expert bank</b> (capacity + compute-bound). <b>Distinct from wide-EP (scheme 3):</b> AFD splits the <em>component</em> (attention vs FFN onto different pools); wide-EP scales the <em>expert operator itself</em> across many devices. They're composable — MegaScale-Infer / Step-3 do AFD; DeepSeek / Kimi / CloudMatrix do wide-EP.</p>
     <svg id="svg-ae" viewBox="0 0 680 210">
       <defs><marker id="ah2" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker></defs>
       <rect x="74" y="46" width="172" height="120" rx="10" class="pool"/>
@@ -154,9 +154,106 @@
     </div>
   </div>
 
-  <!-- 3 · SPECULATIVE DECODING -->
+  <!-- 3 · WIDE EXPERT PARALLELISM -->
   <div class="card">
-    <h2>3 · Speculative decoding <span class="tag">draft / target split</span></h2>
+    <h2>3 · Wide expert parallelism <span class="tag">MoE · operator scaling</span></h2>
+    <p class="sum">Spread the expert operator across many devices (EP degree), with attention data-parallel on the <em>same</em> devices. Wider EP → fewer experts per device → less weight read each (faster, cheaper per device) — but more all-to-all, and past the fabric domain it falls onto slow scale-out.</p>
+    <svg id="svg-we" viewBox="0 0 680 210">
+      <defs><marker id="ahw" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L7,4 L0,8 z" fill="#2563eb"/></marker></defs>
+      <g id="we-dev">
+        <!-- 6 devices, each 2 experts -->
+        <g><rect x="20"  y="54" width="92" height="92" rx="8" class="pool"/><rect x="32"  y="84" width="30" height="44" rx="4" class="exp"/><rect x="70"  y="84" width="30" height="44" rx="4" class="exp"/><text x="66"  y="70" class="poolsub" text-anchor="middle">dev 1</text></g>
+        <g><rect x="128" y="54" width="92" height="92" rx="8" class="pool"/><rect x="140" y="84" width="30" height="44" rx="4" class="exp"/><rect x="178" y="84" width="30" height="44" rx="4" class="exp"/><text x="174" y="70" class="poolsub" text-anchor="middle">dev 2</text></g>
+        <g><rect x="236" y="54" width="92" height="92" rx="8" class="pool"/><rect x="248" y="84" width="30" height="44" rx="4" class="exp"/><rect x="286" y="84" width="30" height="44" rx="4" class="exp"/><text x="282" y="70" class="poolsub" text-anchor="middle">dev 3</text></g>
+        <g><rect x="344" y="54" width="92" height="92" rx="8" class="pool"/><rect x="356" y="84" width="30" height="44" rx="4" class="exp"/><rect x="394" y="84" width="30" height="44" rx="4" class="exp"/><text x="390" y="70" class="poolsub" text-anchor="middle">dev 4</text></g>
+        <g><rect x="460" y="54" width="92" height="92" rx="8" class="pool"/><rect x="472" y="84" width="30" height="44" rx="4" class="exp"/><rect x="510" y="84" width="30" height="44" rx="4" class="exp"/><text x="506" y="70" class="poolsub" text-anchor="middle">dev 5</text></g>
+        <g><rect x="568" y="54" width="92" height="92" rx="8" class="pool"/><rect x="580" y="84" width="30" height="44" rx="4" class="exp"/><rect x="618" y="84" width="30" height="44" rx="4" class="exp"/><text x="614" y="70" class="poolsub" text-anchor="middle">dev 6</text></g>
+      </g>
+      <g id="we-route" class="flow">
+        <rect x="140" y="84" width="30" height="44" rx="4" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+        <rect x="356" y="84" width="30" height="44" rx="4" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+        <rect x="580" y="84" width="30" height="44" rx="4" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+        <text x="340" y="166" class="badge" text-anchor="middle">one token → top-K experts, on K different devices</text>
+      </g>
+      <g id="we-a2a" class="flow">
+        <path d="M155,52 Q340,8 605,52" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#ahw)"/>
+        <path d="M605,150 Q340,196 155,150" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#ahw)"/>
+        <text x="340" y="20" class="pktt" text-anchor="middle">all-to-all dispatch + combine · every layer</text>
+      </g>
+      <g id="we-fabric" class="flow">
+        <line x1="20" y1="184" x2="436" y2="184" stroke="#16a34a" stroke-width="3"/>
+        <text x="228" y="200" class="lbl" fill="#16a34a" text-anchor="middle">scale-up fabric domain (≤ rack_size) — cheap all-to-all</text>
+        <line x1="460" y1="184" x2="660" y2="184" stroke="#dc2626" stroke-width="3"/>
+        <text x="560" y="200" class="lbl" fill="#dc2626" text-anchor="middle">EP &gt; domain → scale-out</text>
+      </g>
+    </svg>
+    <div class="ctrl"><button id="prev-we">◀ Prev</button><button id="play-we">▶ Play</button><button id="next-we">Next ▶</button><span class="num" id="n-we"></span></div>
+    <div class="cap" id="cap-we"></div>
+    <div class="fit">
+      <div class="fitcol a">
+        <div class="fith">What wins</div>
+        <p>The expert pool is <b>HBM-bandwidth-bound</b> (only top-K experts read), so the win is spreading wide — ideally <b>one expert per die</b> — so each expert gets a full device's bandwidth.</p>
+        <div class="chips">B200 / GB200 NVL72 · Huawei CloudMatrix (EP320, 1 expert/die)</div>
+      </div>
+      <div class="fitcol b">
+        <div class="fith">What gates it</div>
+        <p>The all-to-all rides the <b>scale-up fabric</b>; spreading past one domain forces it onto scale-out and the comm cost explodes. So a <b>large, fast fabric domain</b> is the enabler.</p>
+        <div class="chips">NVLink NVL72 (72) · Huawei Unified Bus (384) · TPU ICI (256)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4 · EPD / ENCODER -->
+  <div class="card">
+    <h2>4 · Encode / Prefill / Decode <span class="tag">multimodal · encoder split</span></h2>
+    <p class="sum">For vision/audio models, split the modality <b>encoder</b> (compute-bound, saturates tensor cores, low HBM demand) from the LLM (prefill + decode). The encoder runs on its own right-sized pool; image embeddings cross to the LLM once per request.</p>
+    <svg id="svg-ep" viewBox="0 0 680 190">
+      <defs><marker id="ahe" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker>
+        <marker id="aheg" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#16a34a"/></marker></defs>
+      <g id="ep-img" class="flow">
+        <rect x="12" y="74" width="34" height="34" rx="4" fill="#e0e7ff" stroke="#a5b4fc"/><text x="29" y="96" font-size="18" text-anchor="middle">🖼</text>
+        <text x="29" y="124" class="lbl" text-anchor="middle">image(s)</text>
+        <line x1="50" y1="91" x2="96" y2="91" stroke="#2563eb" stroke-width="2" marker-end="url(#ahe)"/>
+      </g>
+      <rect x="102" y="48" width="150" height="92" rx="10" class="pool"/>
+      <text x="177" y="68" class="poollbl" text-anchor="middle">Encoder pool</text>
+      <text x="177" y="82" class="poolsub" text-anchor="middle">vision · compute-bound</text>
+      <rect x="118" y="92" width="118" height="36" rx="6" class="chip"/>
+      <rect id="ep-enc" class="flow glow" x="102" y="48" width="150" height="92" rx="10" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+      <g id="ep-emb" class="flow">
+        <line x1="254" y1="91" x2="396" y2="91" stroke="#2563eb" stroke-width="2" marker-end="url(#ahe)"/>
+        <rect x="284" y="75" width="82" height="30" rx="6" class="pkt"/><text x="325" y="94" class="pktt" text-anchor="middle">img tokens</text>
+      </g>
+      <rect x="400" y="48" width="180" height="92" rx="10" class="pool"/>
+      <text x="490" y="68" class="poollbl" text-anchor="middle">LLM pool</text>
+      <text x="490" y="82" class="poolsub" text-anchor="middle">prefill + decode</text>
+      <rect x="416" y="92" width="68" height="36" rx="6" class="chip"/><rect x="496" y="92" width="68" height="36" rx="6" class="chip"/>
+      <rect id="ep-llm" class="flow glow" x="400" y="48" width="180" height="92" rx="10" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+      <g id="ep-out" class="flow">
+        <line x1="582" y1="91" x2="620" y2="91" stroke="#16a34a" stroke-width="2" marker-end="url(#aheg)"/>
+        <rect x="624" y="78" width="12" height="12" rx="2" class="tokg"/><rect x="638" y="78" width="12" height="12" rx="2" class="tokg"/>
+        <text x="632" y="124" class="lbl" text-anchor="middle">tokens</text>
+      </g>
+    </svg>
+    <div class="ctrl"><button id="prev-ep">◀ Prev</button><button id="play-ep">▶ Play</button><button id="next-ep">Next ▶</button><span class="num" id="n-ep"></span></div>
+    <div class="cap" id="cap-ep"></div>
+    <div class="fit">
+      <div class="fitcol a">
+        <div class="fith">Encoder pool suits</div>
+        <p>Compute-dense (ViT saturates tensor cores, modest HBM) — and the encoder can run on <b>cheaper / older GPUs</b> since it's not memory-bound.</p>
+        <div class="chips">B200 / H100 · older-gen GPUs · any high-FLOPS part</div>
+      </div>
+      <div class="fitcol b">
+        <div class="fith">LLM pool suits</div>
+        <p>Same as prefill/decode — bandwidth + capacity for the (now image-token-lengthened) prompt and KV.</p>
+        <div class="chips">B200 / MI355X · Groq · d-Matrix</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5 · SPECULATIVE DECODING -->
+  <div class="card">
+    <h2>5 · Speculative decoding <span class="tag">draft / target split</span></h2>
     <p class="sum">A small draft model proposes K tokens; the big target verifies them all in one pass — amortizing the target's expensive weight read over many tokens.</p>
     <svg id="svg-sd" viewBox="0 0 680 210">
       <defs><marker id="ah3" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb"/></marker></defs>
@@ -219,6 +316,18 @@ const SCHEMES = {
     { a:['ae-expert'], c:'A router picks the <b>top-K experts</b> per token; only those FFNs run. The expert pool must hold the whole expert bank (capacity) and is compute-bound.' },
     { a:['ae-back','ae-loop'], c:'The output returns to the attention pool for the next layer. This round-trip happens <b>every layer, both directions</b> — a high-frequency transfer that needs a fast fabric.' },
   ]},
+  we: { steps: [
+    { a:['we-dev'], c:'All experts are <b>spread across EP devices</b>. The more devices, the fewer experts each holds — so each reads less expert weight per token (faster, cheaper per device).' },
+    { a:['we-route'], c:'A token routes to its <b>top-K experts</b> — which now live on K <em>different</em> devices. Attention stays data-parallel on the same devices.' },
+    { a:['we-a2a'], c:'<b>All-to-all</b> dispatches each token to its experts'+"'"+' devices and combines the results back — <em>every layer</em>. This is the cost that grows with EP.' },
+    { a:['we-fabric'], c:'Inside one <b>scale-up fabric domain</b> (≤ rack_size) the all-to-all is cheap. Spread past it (EP &gt; domain) and it falls onto slow <b>scale-out</b> — where the comm cost explodes.' },
+  ]},
+  ep: { steps: [
+    { a:['ep-img'], c:'Image(s) (or audio/video) arrive and go to the <b>encoder pool</b> — a stage that simply does not exist in text-only serving.' },
+    { a:['ep-enc'], c:'The <b>encoder</b> (a vision transformer) is compute-bound — it saturates tensor cores with modest memory demand, so it can run on cheaper hardware.' },
+    { a:['ep-emb'], c:'The resulting <b>image tokens</b> (embeddings) cross to the LLM pool, once per request, and are prepended to the text prompt.' },
+    { a:['ep-llm','ep-out'], c:'The <b>LLM</b> prefills over (text + image tokens), then decodes — running on its own bandwidth-optimized hardware, independent of the encoder.' },
+  ]},
   sd: { steps: [
     { a:['sd-draft'], c:'The small <b>draft</b> model generates K candidate tokens autoregressively — cheap and fast.' },
     { a:['sd-propose'], c:'The K candidates are sent to the big <b>target</b> model — just K token-ids, negligible bytes.' },
@@ -242,7 +351,7 @@ function init(k){
   playBtn.onclick=()=>{ if(timer) stop(); else { playBtn.textContent='❚❚ Pause'; timer=setInterval(()=>go(1),1700); } };
   render();
 }
-['pd','ae','sd'].forEach(init);
+['pd','ae','we','ep','sd'].forEach(init);
 </script>
 </body>
 </html>

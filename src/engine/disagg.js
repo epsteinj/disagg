@@ -188,13 +188,13 @@ export function computeAttnExpertPoint({ modelKey, attnChip, expertChip, Bd, T_i
   const transferFrac = (model.L * transferLayer) / tPerToken;
 
   return {
-    axis: 'attn-expert', prefillChip: attnChip, decodeChip: expertChip, Bd,
+    axis: 'afd', prefillChip: attnChip, decodeChip: expertChip, Bd,
     interactivity, throughput, costPerMtok, ttft: 0, kvTransferTime: 0,
     Np: Na, Nd: Ne, totalCost,
     decodeBind: transferFrac > 0.4 ? 'xfer-bound' : (expertLayer > attnLayer ? 'expert' : 'attention'),
     interFabric: xfer.mode, heterogeneous: attnChip !== expertChip, transferFrac,
     detail: {
-      axis: 'attn-expert',
+      axis: 'afd',
       poolA: { role: 'Attention', chipKey: attnChip, total: Na },
       poolB: { role: 'Expert', chipKey: expertChip, total: Ne },
       link: { what: 'Hidden-state activations', bytesPerLayer: 2 * Bd * model.d * bpvA, mode: xfer.mode, bw: xfer.bw, freq: `every layer × 2 directions (${model.L} layers)`, transferFrac },
@@ -240,15 +240,124 @@ export function computeSpecDecodePoint({ modelKey, targetChip, draftChip, draftM
   };
 }
 
-// Unified sweep dispatcher. chipsA → pool A (prefill / attention / draft), chipsB → pool B (decode / expert / target).
-export function sweep({ axis = 'prefill-decode', modelKey, chipsA, chipsB, batches, T_in = 4096, T_out = 512, precision = 'fp8', draftModelKey = 'llama-3-2-1b', K = 4, alpha = 0.7, topology = 'auto' }) {
+// ── AXIS 4 · Wide Expert Parallelism (MoE only) — FIRST-ORDER MODEL ──
+// DISTINCT from AFD: AFD splits attention *from* the FFN onto different pools. Wide-EP scales the EXPERT
+// operator across many devices (EP degree), with attention data-parallel on the SAME devices. As EP grows,
+// each device holds & reads fewer experts (faster, cheaper per device) but the all-to-all dispatch/combine
+// grows and — past the chip's fabric domain (rack_size) — falls onto slow scale-out. Optimum is often
+// "one expert per die" (EP = E) IF that fits inside the scale-up fabric (NVL72 / Huawei UB).
+export function computeWideEPPoint({ modelKey, chip, EP, Bd, T_in = 4096, T_out = 512, precision = 'fp8', topology = 'auto' }) {
+  const model = modelPresets[modelKey];
+  if (!model || !model.is_moe || EP < 1) return null;
+  const c = chipPerfSpecs[chip];
+  if (!c) return null;
+  const ioRatio = T_in / T_out, T_max = T_in * (1 + 1 / ioRatio);
+  const effPrec = _resolvePrec(c, precision), bpv = _bytesPerValOf(effPrec);
+  const E = model.E || 64, K = model.K || 8;
+  const nonExpert = estimateNonExpertBytes(model, bpv);
+  const expertBytes = Math.max(0, model.N_params * bpv - nonExpert);
+  const dkv = (model.H_kv && model.d_k) ? model.H_kv * model.d_k : model.d;
+  const kvBytes = Bd * T_max * 2 * dkv * model.L * bpv;
+  // Per-device capacity: replicated attention/embeddings (DP) + expert shard (E/EP) + KV shard.
+  const cap = c.mem_cap + (c.mem_cap_cold || 0);
+  if (nonExpert + expertBytes / EP + kvBytes / EP > cap * 0.95) return null; // infeasible at this EP/batch
+  const memBW = c.mem_bw, bwEff = c.bw_eff ?? 0.7;
+  // Per-token decode reads (all layers): attention weights (replicated) + KV shard + per-device expert read.
+  const expertsTouched = Math.min(E, Math.max(K, K * Bd));
+  const perDeviceExpertRead = (expertsTouched / E) * expertBytes / EP;
+  const memT = (nonExpert + kvBytes / EP + perDeviceExpertRead) / (memBW * bwEff);
+  // All-to-all dispatch+combine per layer, over scale-up fabric if EP fits the domain, else scale-out.
+  const inDomain = EP <= (c.rack_size || 8);
+  const fabricBW = topology === 'scale-out' ? (c.scaleout_bw || 100e9)
+                 : topology === 'scale-up' ? (c.interconnect_bw || 1e9)
+                 : (inDomain ? (c.interconnect_bw || 1e9) : (c.scaleout_bw || 100e9));
+  const commT = model.L * 2 * (Bd * K * model.d * bpv / EP) / fabricBW;
+  const decodeT = memT + commT;
+  const interactivity = 1 / decodeT, throughput = Bd / decodeT;
+  const totalCost = EP * c.cost_usd;
+  const costPerMtok = throughput > 0 ? (totalCost / AMORT_S) / throughput * 1e6 : Infinity;
+  const commFrac = commT / decodeT;
+  const fabricMode = (inDomain || topology === 'scale-up') ? (c.ic_name || 'scale-up') : 'scale-out';
+  return {
+    axis: 'wide-ep', prefillChip: chip, decodeChip: chip, Bd, EP,
+    interactivity, throughput, costPerMtok, ttft: 0,
+    Np: EP, Nd: EP, totalCost, heterogeneous: false, interFabric: fabricMode,
+    decodeBind: commFrac > 0.4 ? 'all-to-all' : (EP === E ? '1 expert/die' : 'expert read'),
+    detail: {
+      axis: 'wide-ep',
+      poolA: { role: 'Attention (DP)', chipKey: chip, total: EP },
+      poolB: { role: `Experts (EP=${EP}, ${(E / EP).toFixed(1)}/die)`, chipKey: chip, total: EP },
+      link: { what: 'expert all-to-all (dispatch + combine)', mode: fabricMode, freq: `every layer (${model.L}) · ${commFrac > 0.4 ? 'comm-bound' : 'comm-light'}` },
+      EP, E, perDeviceExperts: E / EP, commFrac, onePerDie: EP === E,
+    },
+  };
+}
+
+// ── AXIS 5 · EPD / Encoder disaggregation (multimodal) — FIRST-ORDER MODEL ──
+// Splits the modality ENCODER (vision/audio → embeddings; compute-bound, saturates tensor cores) from the
+// LLM (prefill + decode). Encoder runs on its own pool; image embeddings cross to the LLM pool once per
+// request. Encoder is parameterized by GFLOPs/image, tokens/image, images/request (no VLM preset needed —
+// any model is treated as the LLM, with image tokens appended to the prompt).
+export function computeEPDPoint({ modelKey, encoderChip, llmChip, Bd, T_in = 4096, T_out = 512, precision = 'fp8', imagesPerReq = 1, encGflopsPerImage = 200, imgTokensPerImage = 256, topology = 'auto' }) {
+  const model = modelPresets[modelKey];
+  if (!model) return null;
+  const ce = chipPerfSpecs[encoderChip], cl = chipPerfSpecs[llmChip];
+  if (!ce || !cl) return null;
+  const workload = model.is_moe ? 'moe' : 'llm';
+  const imgTokens = Math.round(imgTokensPerImage * imagesPerReq);
+  const T_in_eff = T_in + imgTokens;       // image tokens lengthen the prompt the LLM digests
+  const ioRatio = T_in_eff / T_out;
+  // LLM pool: decode (interactivity / throughput) + prefill (TTFT) on llmChip.
+  const rd = computeChipSummary(llmChip, model, Bd, T_in_eff, precision, workload, 'decode', 50, null, 'auto', ioRatio);
+  const rp = computeChipSummary(llmChip, model, 1, T_in_eff, precision, workload, 'prefill', 50, null, 'auto', ioRatio);
+  if (!rd || !rp) return null;
+  const interactivity = 1 / rd.totalLayerTime, throughput = rd.topValue;
+  const Nllm = rd.N_chips, llmCost = Nllm * cl.cost_usd;
+  // Encoder pool: compute-bound; sized (replicas) to feed the request rate.
+  const effEnc = _resolvePrec(ce, precision);
+  const peakEnc = ce['peak_' + effEnc] || ce.peak_fp16;
+  const encTimePerReq = (encGflopsPerImage * 1e9 * imagesPerReq) / (peakEnc * (ce.comp_eff ?? 0.5));
+  const promptRate = throughput / T_out;
+  const Nenc = Math.max(1, Math.ceil(promptRate * encTimePerReq));
+  const encCost = Nenc * ce.cost_usd;
+  // Transfer: image embeddings encoder → LLM, once per request.
+  const embBytes = imgTokens * model.d * _bytesPerValOf(effEnc);
+  const xfer = _interPoolBW(encoderChip, llmChip, Nenc, Nllm, topology);
+  const xferTime = embBytes / xfer.bw;
+  const ttft = encTimePerReq + xferTime + rp.totalLayerTime;
+  const totalCost = encCost + llmCost;
+  const costPerMtok = throughput > 0 ? (totalCost / AMORT_S) / throughput * 1e6 : Infinity;
+  return {
+    axis: 'epd', prefillChip: encoderChip, decodeChip: llmChip, Bd,
+    interactivity, throughput, costPerMtok, ttft,
+    Np: Nenc, Nd: Nllm, totalCost, heterogeneous: encoderChip !== llmChip,
+    interFabric: xfer.mode, decodeBind: rd.overallBinds,
+    detail: {
+      axis: 'epd',
+      poolA: { role: 'Encoder', chipKey: encoderChip, total: Nenc },
+      poolB: { role: 'LLM (prefill+decode)', chipKey: llmChip, total: Nllm },
+      link: { what: 'image embeddings', bytes: embBytes, mode: xfer.mode, bw: xfer.bw, time: xferTime, freq: `per request (${imagesPerReq} img × ${imgTokensPerImage} tok)` },
+      encTime: encTimePerReq, imgTokens,
+    },
+  };
+}
+
+// Unified sweep dispatcher. chipsA → pool A (prefill / attention / draft / encoder), chipsB → pool B (decode / FFN / target / LLM / EP chip).
+export function sweep({ axis = 'prefill-decode', modelKey, chipsA, chipsB, batches, T_in = 4096, T_out = 512, precision = 'fp8', draftModelKey = 'llama-3-2-1b', K = 4, alpha = 0.7, topology = 'auto', epDegrees = [8, 16, 32, 64, 128, 256], imagesPerReq = 1, encGflopsPerImage = 200, imgTokensPerImage = 256 }) {
   const pts = [];
-  for (const a of chipsA) for (const b of chipsB) for (const Bd of batches) {
-    let p;
-    if (axis === 'attn-expert') p = computeAttnExpertPoint({ modelKey, attnChip: a, expertChip: b, Bd, T_in, T_out, precision, topology });
-    else if (axis === 'spec-decode') p = computeSpecDecodePoint({ modelKey, targetChip: b, draftChip: a, draftModelKey, Bd, K, alpha, T_in, T_out, precision });
-    else p = computeDisaggPoint({ modelKey, prefillChip: a, decodeChip: b, Bd, T_in, T_out, precision, topology });
-    if (p && isFinite(p.throughput) && isFinite(p.costPerMtok) && p.throughput > 0) pts.push(p);
+  const keep = p => { if (p && isFinite(p.throughput) && isFinite(p.costPerMtok) && p.throughput > 0) pts.push(p); };
+  if (axis === 'wide-ep') {
+    for (const b of chipsB) for (const Bd of batches) for (const EP of epDegrees)
+      keep(computeWideEPPoint({ modelKey, chip: b, EP, Bd, T_in, T_out, precision, topology }));
+  } else if (axis === 'epd') {
+    for (const a of chipsA) for (const b of chipsB) for (const Bd of batches)
+      keep(computeEPDPoint({ modelKey, encoderChip: a, llmChip: b, Bd, T_in, T_out, precision, imagesPerReq, encGflopsPerImage, imgTokensPerImage, topology }));
+  } else {
+    for (const a of chipsA) for (const b of chipsB) for (const Bd of batches) {
+      if (axis === 'afd') keep(computeAttnExpertPoint({ modelKey, attnChip: a, expertChip: b, Bd, T_in, T_out, precision, topology }));
+      else if (axis === 'spec-decode') keep(computeSpecDecodePoint({ modelKey, targetChip: b, draftChip: a, draftModelKey, Bd, K, alpha, T_in, T_out, precision }));
+      else keep(computeDisaggPoint({ modelKey, prefillChip: a, decodeChip: b, Bd, T_in, T_out, precision, topology }));
+    }
   }
   return pts;
 }
