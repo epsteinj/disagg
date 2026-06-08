@@ -38,6 +38,13 @@
   .cap{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:11px 13px;font-size:13px;min-height:46px;line-height:1.5;}
   .cap b{color:var(--accent);}
   .foot{font-size:12px;color:var(--muted);line-height:1.6;margin-top:22px;}
+  .fit{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;}
+  .fitcol{border:1px solid var(--line);border-radius:8px;padding:11px 13px;background:#fcfcfd;}
+  .fith{font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;color:var(--accent);margin-bottom:5px;}
+  .fitcol.b .fith{color:var(--het);}
+  .fitcol p{margin:0 0 8px;font-size:12.5px;color:#374151;line-height:1.5;}
+  .fitcol .chips{font-family:var(--mono);font-size:11px;color:#1e293b;background:#f1f5f9;border-radius:5px;padding:5px 8px;line-height:1.5;}
+  @media(max-width:640px){.fit{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -82,6 +89,18 @@
     </svg>
     <div class="ctrl"><button id="prev-pd">◀ Prev</button><button id="play-pd">▶ Play</button><button id="next-pd">Next ▶</button><span class="num" id="n-pd"></span></div>
     <div class="cap" id="cap-pd"></div>
+    <div class="fit">
+      <div class="fitcol a">
+        <div class="fith">Prefill pool suits</div>
+        <p>Compute-dense silicon — high FP8/FP4 peak FLOPS and the best <b>FLOPS-per-dollar</b>. Big HBM and bandwidth matter little; prefill is one parallel pass that reads weights once.</p>
+        <div class="chips">NVIDIA B200 / Rubin · AMD MI355X · Google TPU v7 · Tensordyne</div>
+      </div>
+      <div class="fitcol b">
+        <div class="fith">Decode pool suits</div>
+        <p>Bandwidth- & capacity-dense — re-reads all weights every token, so it wants high HBM bandwidth plus capacity for weights + growing KV. Best <b>bandwidth-per-dollar</b> wins; the phase where inference-specialized / non-NVIDIA parts are most competitive.</p>
+        <div class="chips">B200 / MI355X (8 TB/s) · Groq · Cerebras · d-Matrix · Positron</div>
+      </div>
+    </div>
   </div>
 
   <!-- 2 · ATTENTION / EXPERT -->
@@ -121,6 +140,18 @@
     </svg>
     <div class="ctrl"><button id="prev-ae">◀ Prev</button><button id="play-ae">▶ Play</button><button id="next-ae">Next ▶</button><span class="num" id="n-ae"></span></div>
     <div class="cap" id="cap-ae"></div>
+    <div class="fit">
+      <div class="fitcol a">
+        <div class="fith">Attention pool suits</div>
+        <p>Bandwidth-dense with KV capacity — attention is gated by reading the KV cache, which grows with context × batch. Wants high HBM bandwidth and enough capacity for long contexts.</p>
+        <div class="chips">B200 / MI355X (288 GB) · Groq · d-Matrix (KV in LPDDR tier)</div>
+      </div>
+      <div class="fitcol b">
+        <div class="fith">Expert pool suits</div>
+        <p>Capacity-dense but <b>sparsely read</b> — must hold the entire expert bank (100s of GB for frontier MoE), yet only top-K fire per token, so bandwidth demand is sparse. → <b>cheap, high-capacity memory (LPDDR/CXL-backed) is a strong, cost-efficient fit</b>, not just expensive HBM.</p>
+        <div class="chips">Positron Asimov (2 TB) · d-Matrix (256 GB LPDDR) · Meta MTIA · MI355X (288 GB)</div>
+      </div>
+    </div>
   </div>
 
   <!-- 3 · SPECULATIVE DECODING -->
@@ -157,6 +188,18 @@
     </svg>
     <div class="ctrl"><button id="prev-sd">◀ Prev</button><button id="play-sd">▶ Play</button><button id="next-sd">Next ▶</button><span class="num" id="n-sd"></span></div>
     <div class="cap" id="cap-sd"></div>
+    <div class="fit">
+      <div class="fitcol a">
+        <div class="fith">Draft pool suits</div>
+        <p>Tiny-model latency kings — the draft runs autoregressively, so per-token <b>latency</b> dominates and the model is small (≤ a few B). Capacity is trivial; cost should be low.</p>
+        <div class="chips">Groq (lowest latency) · d-Matrix Corsair (1B = 1 card, its lane) · Tenstorrent · edge / small GPUs</div>
+      </div>
+      <div class="fitcol b">
+        <div class="fith">Target pool suits</div>
+        <p>Big compute + bandwidth — verifying K tokens in one pass is more <b>compute-heavy</b> than single-token decode, so it rewards FLOPS on top of the usual decode bandwidth and capacity.</p>
+        <div class="chips">NVIDIA B200 / Rubin · AMD MI355X · big-HBM accelerators</div>
+      </div>
+    </div>
   </div>
 
   <p class="foot"><b>Scale-up</b> = a vendor's intra-rack fabric (NVLink/NVL72, Infinity Fabric, ICI, NeuronLink, Credo, Juniper…) — high bandwidth, limited domain size, single-vendor. <b>Scale-out</b> = cross-rack InfiniBand / Ethernet — lower bandwidth, unbounded, vendor-agnostic. Mixed-vendor pools can only talk scale-out, which is why heterogeneous disaggregation pays a transfer penalty homogeneous deployments avoid.</p>
